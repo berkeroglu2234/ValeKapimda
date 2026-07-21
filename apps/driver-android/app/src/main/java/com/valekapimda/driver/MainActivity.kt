@@ -1,9 +1,14 @@
 package com.valekapimda.driver
 
+import android.Manifest
+import android.content.pm.PackageManager
+
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -28,6 +33,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -35,13 +41,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 import io.socket.client.IO
 import io.socket.client.Socket
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -49,7 +60,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
-private const val API_BASE_URL = "http://10.0.2.2:4000"
+private const val API_BASE_URL = "https://valekapimda-api.onrender.com"
 
 private data class DriverRequest(
     val id: String,
@@ -71,20 +82,29 @@ class MainActivity : ComponentActivity() {
 fun DriverApp() {
     val scope = rememberCoroutineScope()
     val requests = remember { mutableStateListOf<DriverRequest>() }
+    var activeRequest by remember { mutableStateOf<DriverRequest?>(null) }
 
     var available by remember { mutableStateOf(true) }
     var connected by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(true) }
     var message by remember { mutableStateOf("Sunucuya bağlanılıyor...") }
     var token by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    var locationPermission by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) }
+    val locationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { locationPermission = it }
 
     val socket = remember {
         IO.socket(
             API_BASE_URL,
             IO.Options().apply {
                 reconnection = true
-                forceNew = true
-                transports = arrayOf("websocket", "polling")
+                reconnectionAttempts = Int.MAX_VALUE
+                reconnectionDelay = 1_000
+                reconnectionDelayMax = 10_000
+                timeout = 30_000
+                forceNew = false
+                // Transport seçimini Socket.IO'ya bırakıyoruz.
+                // Önce polling ile bağlanıp uygun olduğunda WebSocket'e yükseltir.
             }
         )
     }
@@ -94,28 +114,53 @@ fun DriverApp() {
         val index = requests.indexOfFirst { it.id == item.id }
 
         if (item.status == "SEARCHING") {
-            if (index >= 0) requests[index] = item else requests.add(0, item)
-        } else if (index >= 0) {
-            requests.removeAt(index)
+            if (activeRequest == null && available) {
+                if (index >= 0) requests[index] = item else requests.add(0, item)
+            }
+            return
+        }
+
+        if (index >= 0) requests.removeAt(index)
+
+        if (activeRequest?.id == item.id) {
+            if (item.status == "COMPLETED" || item.status == "CANCELLED") {
+                activeRequest = null
+                available = true
+                message = if (item.status == "COMPLETED") {
+                    "Görev tamamlandı. Yeni talepleri alabilirsiniz."
+                } else {
+                    "Görev iptal edildi. Yeni talepleri alabilirsiniz."
+                }
+            } else {
+                activeRequest = item
+                available = false
+                message = driverStatusText(item.status)
+            }
         }
     }
 
     DisposableEffect(socket) {
         val connectListener = {
-            connected = true
-            message = "Canlı bağlantı kuruldu."
+            scope.launch {
+                connected = true
+                message = "Canlı bağlantı kuruldu."
+            }
         }
 
         val disconnectListener = {
-            connected = false
-            message = "Canlı bağlantı kesildi. Yeniden bağlanılıyor..."
+            scope.launch {
+                connected = false
+                message = "Canlı bağlantı kesildi. Yeniden bağlanılıyor..."
+            }
         }
 
         val connectErrorListener: (Array<Any>) -> Unit = { args ->
-            connected = false
             val error = args.firstOrNull()?.toString().orEmpty()
-            message = "Socket bağlantı hatası: $error"
             Log.e("ValeDriverSocket", error)
+            scope.launch {
+                connected = false
+                message = "Bağlantı kurulamadı, yeniden deneniyor: $error"
+            }
         }
 
         val newRequestListener: (Array<Any>) -> Unit = { args ->
@@ -149,6 +194,7 @@ fun DriverApp() {
             socket.off("request:new")
             socket.off("request:updated")
             socket.disconnect()
+            socket.close()
         }
     }
 
@@ -175,6 +221,31 @@ fun DriverApp() {
         }.onFailure {
             loading = false
             message = "Sürücü girişi başarısız: ${it.message}"
+        }
+    }
+
+
+    LaunchedEffect(activeRequest?.id, locationPermission) {
+        val requestId = activeRequest?.id ?: return@LaunchedEffect
+        if (!locationPermission) {
+            locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+            return@LaunchedEffect
+        }
+        val client = LocationServices.getFusedLocationProviderClient(context)
+        while (activeRequest?.id == requestId) {
+            try {
+                client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).addOnSuccessListener { loc ->
+                    if (loc != null && socket.connected()) {
+                        socket.emit("location:update", JSONObject().apply {
+                            put("requestId", requestId)
+                            put("lat", loc.latitude)
+                            put("lng", loc.longitude)
+                            put("timestamp", System.currentTimeMillis())
+                        })
+                    }
+                }
+            } catch (_: SecurityException) { }
+            delay(5_000)
         }
     }
 
@@ -219,6 +290,7 @@ fun DriverApp() {
 
                     Switch(
                         checked = available,
+                        enabled = activeRequest == null,
                         onCheckedChange = {
                             available = it
                             message = if (it) {
@@ -236,10 +308,69 @@ fun DriverApp() {
                     fontSize = 13.sp
                 )
 
+                val currentActiveRequest = activeRequest
+
                 if (loading) {
                     CircularProgressIndicator()
+                } else if (currentActiveRequest != null) {
+                    ActiveRequestCard(
+                        request = currentActiveRequest,
+                        enabled = token != null,
+                        onAdvance = { nextStatus ->
+                            val currentToken = token
+                            if (currentToken == null) {
+                                message = "Oturum henüz hazır değil."
+                            } else {
+                                scope.launch {
+                                    message = "Durum güncelleniyor..."
+
+                                    updateRequestStatus(
+                                        token = currentToken,
+                                        requestId = currentActiveRequest.id,
+                                        status = nextStatus
+                                    ).onSuccess { updated ->
+                                        activeRequest = if (
+                                            updated.status == "COMPLETED" ||
+                                            updated.status == "CANCELLED"
+                                        ) {
+                                            available = true
+                                            null
+                                        } else {
+                                            available = false
+                                            updated
+                                        }
+                                        message = driverStatusText(updated.status)
+                                    }.onFailure {
+                                        message = "Durum güncellenemedi: ${it.message}"
+                                    }
+                                }
+                            }
+                        },
+                        onCancel = {
+                            val currentToken = token
+                            if (currentToken == null) {
+                                message = "Oturum henüz hazır değil."
+                            } else {
+                                scope.launch {
+                                    message = "Görev iptal ediliyor..."
+
+                                    updateRequestStatus(
+                                        token = currentToken,
+                                        requestId = currentActiveRequest.id,
+                                        status = "CANCELLED"
+                                    ).onSuccess {
+                                        activeRequest = null
+                                        available = true
+                                        message = "Görev iptal edildi."
+                                    }.onFailure {
+                                        message = "Görev iptal edilemedi: ${it.message}"
+                                    }
+                                }
+                            }
+                        }
+                    )
                 } else if (!available) {
-                    EmptyCard("Şu anda meşgulsünüz.")
+                    EmptyCard("Çevrimdışısınız. Yeni talep almak için Müsait anahtarını açın.")
                 } else if (requests.isEmpty()) {
                     EmptyCard("Yeni vale talebi bekleniyor...")
                 } else {
@@ -260,10 +391,11 @@ fun DriverApp() {
                                         message = "Talep kabul ediliyor..."
 
                                         acceptRequest(currentToken, request.id)
-                                            .onSuccess {
+                                            .onSuccess { accepted ->
                                                 requests.removeAll { it.id == request.id }
+                                                activeRequest = accepted
                                                 available = false
-                                                message = "Talep kabul edildi. Müşteriye bilgi gönderildi."
+                                                message = driverStatusText(accepted.status)
                                             }
                                             .onFailure {
                                                 message = "Kabul edilemedi: ${it.message}"
@@ -349,6 +481,99 @@ private fun RequestCard(
 }
 
 @Composable
+private fun ActiveRequestCard(
+    request: DriverRequest,
+    enabled: Boolean,
+    onAdvance: (String) -> Unit,
+    onCancel: () -> Unit
+) {
+    val next = nextDriverStatus(request.status)
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF151B23)),
+        shape = RoundedCornerShape(20.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                "Aktif Görev",
+                color = Color.White,
+                fontSize = 21.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                driverStatusText(request.status),
+                color = Color(0xFF55D98A),
+                fontWeight = FontWeight.Bold
+            )
+
+            Text("📍 ${request.pickupAddress}", color = Color.White)
+            Text("🏁 ${request.destinationAddress}", color = Color.White)
+            Text(
+                "Mesafe: %.1f km".format(request.distanceKm),
+                color = Color(0xFF9AA4B2)
+            )
+            Text(
+                "Tahmini kazanç: ₺${request.quotedPrice.toInt()}",
+                color = Color(0xFFFF9800),
+                fontWeight = FontWeight.Bold
+            )
+
+            if (next != null) {
+                Button(
+                    onClick = { onAdvance(next.first) },
+                    enabled = enabled,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFFF9800)
+                    )
+                ) {
+                    Text(next.second)
+                }
+            }
+
+            OutlinedButton(
+                onClick = onCancel,
+                enabled = enabled,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Görevi İptal Et")
+            }
+        }
+    }
+}
+
+private fun nextDriverStatus(status: String): Pair<String, String>? {
+    return when (status) {
+        "ASSIGNED" -> "DRIVER_EN_ROUTE" to "Müşteriye Doğru Yola Çıktım"
+        "DRIVER_EN_ROUTE" -> "ARRIVED" to "Alım Noktasına Geldim"
+        "ARRIVED" -> "VEHICLE_RECEIVED" to "Aracı Teslim Aldım"
+        "VEHICLE_RECEIVED" -> "IN_TRANSIT" to "Teslimat İçin Yola Çıktım"
+        "IN_TRANSIT" -> "DELIVERED" to "Aracı Teslim Ettim"
+        "DELIVERED" -> "COMPLETED" to "Görevi Tamamla"
+        else -> null
+    }
+}
+
+private fun driverStatusText(status: String): String {
+    return when (status) {
+        "ASSIGNED" -> "Talep kabul edildi. Yola çıkmanız bekleniyor."
+        "DRIVER_EN_ROUTE" -> "Müşteriye doğru yoldasınız."
+        "ARRIVED" -> "Alım noktasına ulaştınız."
+        "VEHICLE_RECEIVED" -> "Araç teslim alındı."
+        "IN_TRANSIT" -> "Araç teslimat noktasına götürülüyor."
+        "DELIVERED" -> "Araç müşteriye teslim edildi."
+        "COMPLETED" -> "Görev tamamlandı."
+        "CANCELLED" -> "Görev iptal edildi."
+        else -> "Aktif görev devam ediyor."
+    }
+}
+
+@Composable
 private fun EmptyCard(text: String) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -413,17 +638,30 @@ private suspend fun getSearchingRequests(
 private suspend fun acceptRequest(
     token: String,
     requestId: String
-): Result<Unit> = withContext(Dispatchers.IO) {
+): Result<DriverRequest> {
+    return updateRequestStatus(
+        token = token,
+        requestId = requestId,
+        status = "ASSIGNED"
+    )
+}
+
+private suspend fun updateRequestStatus(
+    token: String,
+    requestId: String,
+    status: String
+): Result<DriverRequest> = withContext(Dispatchers.IO) {
     runCatching {
-        requestJson(
+        val response = requestJson(
             method = "PATCH",
             url = "$API_BASE_URL/requests/$requestId/status",
             token = token,
             body = JSONObject().apply {
-                put("status", "ASSIGNED")
+                put("status", status)
             }
         )
-        Unit
+
+        jsonToDriverRequest(response)
     }
 }
 

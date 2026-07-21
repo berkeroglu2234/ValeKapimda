@@ -112,5 +112,50 @@ app.patch('/requests/:id/status', auth, role('DRIVER', 'ADMIN'), async (req: Aut
   } catch (e: any) { res.status(500).json({ message: e.message }); }
 });
 
+
+
+app.get('/places/search', async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 3) return res.json([]);
+    const viewbox = req.query.lat && req.query.lng
+      ? `&viewbox=${Number(req.query.lng)-0.6},${Number(req.query.lat)+0.4},${Number(req.query.lng)+0.6},${Number(req.query.lat)-0.4}&bounded=0`
+      : '';
+    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=7&countrycodes=tr&accept-language=tr&q=${encodeURIComponent(q)}${viewbox}`;
+    const response = await fetch(url, { headers: { 'User-Agent': 'ValeKapimda/1.0 (support@valekapimda.app)' } });
+    if (!response.ok) throw new Error('Adres servisi yanıt vermedi');
+    const data: any[] = await response.json();
+    res.json(data.map(x => ({ displayName: x.display_name, lat: Number(x.lat), lng: Number(x.lon) })));
+  } catch (e: any) { res.status(502).json({ message: e.message }); }
+});
+
+app.get('/places/reverse', async (req, res) => {
+  try {
+    const lat = Number(req.query.lat), lng = Number(req.query.lng);
+    const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&accept-language=tr&lat=${lat}&lon=${lng}`, { headers: { 'User-Agent': 'ValeKapimda/1.0 (support@valekapimda.app)' } });
+    if (!response.ok) throw new Error('Adres servisi yanıt vermedi');
+    const data: any = await response.json();
+    res.json({ displayName: data.display_name || `${lat}, ${lng}` });
+  } catch (e: any) { res.status(502).json({ message: e.message }); }
+});
+
+app.get('/route', async (req, res) => {
+  try {
+    const fromLat = Number(req.query.fromLat), fromLng = Number(req.query.fromLng);
+    const toLat = Number(req.query.toLat), toLng = Number(req.query.toLng);
+    if (![fromLat,fromLng,toLat,toLng].every(Number.isFinite)) return res.status(400).json({ message: 'Koordinatlar geçersiz' });
+    const response = await fetch(`https://router.project-osrm.org/route/v1/driving/${fromLng},${fromLat};${toLng},${toLat}?overview=full&geometries=geojson`);
+    if (!response.ok) throw new Error('Rota servisi yanıt vermedi');
+    const data: any = await response.json();
+    const route = data.routes?.[0];
+    if (!route) return res.status(404).json({ message: 'Rota bulunamadı' });
+    res.json({
+      distanceKm: Math.round((route.distance / 1000) * 10) / 10,
+      durationMinutes: Math.max(1, Math.round(route.duration / 60)),
+      points: route.geometry.coordinates.map((c: number[]) => [c[1], c[0]])
+    });
+  } catch (e: any) { res.status(502).json({ message: e.message }); }
+});
+
 io.on('connection', socket => { socket.on('location:update', data => socket.broadcast.emit('location:updated', data)); });
 server.listen(Number(process.env.PORT || 4000), () => console.log('ValeKapımda API http://localhost:' + (process.env.PORT || 4000)));
