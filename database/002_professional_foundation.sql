@@ -13,6 +13,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_vehicle_customer_plate_active ON vehicles(c
 
 ALTER TABLE valet_requests ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
 
+CREATE TABLE IF NOT EXISTS live_locations (
+  user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  lat NUMERIC(10,7) NOT NULL,
+  lng NUMERIC(10,7) NOT NULL,
+  heading NUMERIC(6,2),
+  accuracy NUMERIC(8,2),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
 ALTER TABLE live_locations ADD COLUMN IF NOT EXISTS accuracy NUMERIC(8,2);
 
 CREATE TABLE IF NOT EXISTS otp_codes (
