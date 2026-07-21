@@ -27,7 +27,20 @@ function role(...roles: string[]) {
     roles.includes(req.user?.role || '') ? next() : res.status(403).json({ message: 'Yetkisiz' });
 }
 
-app.get('/health', (_, res) => res.json({ ok: true, name: 'ValeKapımda API' }));
+app.get('/', (_, res) => {
+  res.json({
+    ok: true,
+    name: 'ValeKapımda API',
+    status: 'online'
+  });
+});
+
+app.get('/health', (_, res) => {
+  res.json({
+    ok: true,
+    name: 'ValeKapımda API'
+  });
+});
 
 app.post('/auth/demo-login', async (req, res) => {
   const schema = z.object({ role: z.enum(['CUSTOMER', 'DRIVER', 'ADMIN']), phone: z.string().min(5), fullName: z.string().min(2) });
