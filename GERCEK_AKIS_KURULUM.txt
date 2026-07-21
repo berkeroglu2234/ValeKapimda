@@ -1,0 +1,20 @@
+VALEKAPIMDA GERÇEK AKIŞ 1
+
+Bu sürümde:
+- Android çalışma zamanı konum izni
+- Telefonun/emülatörün gerçek konumunu alma
+- Haritaya dokunarak alım ve varış noktası seçme
+- Koordinatlardan yaklaşık mesafe ve fiyat hesaplama
+- Müşteriyi PostgreSQL'e kaydetme/güncelleme
+- Aracı PostgreSQL'e kaydetme
+- Vale talebini PostgreSQL'e kaydetme
+- Yeni talebi Socket.IO ile yönetim paneline yayınlama
+
+Çalıştırma:
+1) Proje kökünde: docker compose up -d
+2) services/api içinde: npm install ve npm run dev
+3) Android Studio'da apps/customer-android klasörünü açın.
+4) AndroidManifest.xml içindeki BURAYA_GOOGLE_MAPS_API_ANAHTARI alanını doldurun.
+5) Emülatörde konum için üç nokta > Location bölümünden konum gönderin.
+
+Not: Bu aşamadaki mesafe kuş uçuşu yaklaşık mesafedir. Yol güzergâhına göre gerçek sürüş mesafesi sonraki Routes API entegrasyonunda eklenecektir.

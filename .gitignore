@@ -1,0 +1,12 @@
+﻿.env
+**/.env
+node_modules/
+**/node_modules/
+.gradle/
+**/.gradle/
+build/
+**/build/
+.idea/
+**/.idea/
+local.properties
+*.iml
