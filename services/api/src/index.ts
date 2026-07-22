@@ -74,7 +74,7 @@ app.get('/pricing', async (_, res) => {
 
 app.get('/requests', auth, async (req: AuthedRequest, res) => {
   try {
-    let sql = `SELECT vr.*, d.full_name AS driver_name, d.phone AS driver_phone, COALESCE(AVG(rt.score),0)::float AS driver_rating
+    let sql = `SELECT  vr.*, vr.distance_km AS "distanceKm", vr.quoted_price AS "quotedPrice", d.full_name AS driver_name, d.phone AS driver_phone, COALESCE(AVG(rt.score),0)::float AS driver_rating
       FROM valet_requests vr
       LEFT JOIN users d ON d.id=vr.driver_id
       LEFT JOIN ratings rt ON rt.driver_id=vr.driver_id`;
