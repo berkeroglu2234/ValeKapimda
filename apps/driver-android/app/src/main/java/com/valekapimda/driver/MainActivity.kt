@@ -732,15 +732,14 @@ private fun EmptyCard(text: String) {
 }
 
 private fun jsonToDriverRequest(json: JSONObject): DriverRequest {
-
     return DriverRequest(
         id = json.optString("id"),
-        pickupAddress = json.optString("pickupAddress"),
-        destinationAddress = json.optString("destinationAddress"),
+        pickupAddress = json.optString("pickup_address", "Alım noktası"),
+        destinationAddress = json.optString("destination_address", "Varış noktası"),
         distanceKm = json.optString("distance_km", "0").toDoubleOrNull() ?: 0.0,
         quotedPrice = json.optString("quoted_price", "0").toDoubleOrNull() ?: 0.0,
         status = json.optString("status"),
-        customerPhone = json.optString("customerPhone")
+        customerPhone = json.optString("customer_phone")
     )
 }
 
