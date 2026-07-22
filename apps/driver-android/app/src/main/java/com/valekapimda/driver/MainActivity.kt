@@ -747,7 +747,7 @@ private suspend fun driverLogin(): Result<String> = withContext(Dispatchers.IO) 
     runCatching {
         val response = requestJson(
             method = "POST",
-            url = "$API_BASE_URL/auth/demo-login",
+            url = "$API_BASE_URL/auth/login"
             body = JSONObject().apply {
                 put("role", "DRIVER")
                 put("phone", "+905551112233")

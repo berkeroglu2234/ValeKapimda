@@ -1,5 +1,6 @@
 package com.valekapimda.customer
 
+import androidx.compose.runtime.saveable.rememberSaveable
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
@@ -470,7 +471,7 @@ private fun HomeScreen(
     var routeLoading by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("Konumunuz hazırlanıyor") }
     var sending by remember { mutableStateOf(false) }
-    var activeRequestId by remember { mutableStateOf<String?>(null) }
+    var activeRequestId by rememberSaveable { mutableStateOf<String?>(null) }
     var requestStatus by remember { mutableStateOf("IDLE") }
     var socketConnected by remember { mutableStateOf(false) }
     var driverPoint by remember { mutableStateOf<LatLng?>(null) }
@@ -501,12 +502,23 @@ private fun HomeScreen(
             if (name.isNotBlank()) driverInfo = DriverInfo(name, driverPhone, rating, selected?.plate ?: "")
         }
     }
+    LaunchedEffect(activeRequestId) {
+        activeRequestId?.let {
+            refreshRequestDetails(requestId = it)
+        }
+    }
+
 
     DisposableEffect(socket) {
         val connectListener = io.socket.emitter.Emitter.Listener {
             scope.launch {
                 socketConnected = true
-                latestRequestId?.let { socket.emit("request:join", JSONObject().put("requestId", it)) }
+                latestRequestId?.let {
+                    socket.emit(
+                        "request:join",
+                        JSONObject().put("requestId", it)
+                    )
+                }
             }
         }
         val disconnectListener = io.socket.emitter.Emitter.Listener { scope.launch { socketConnected = false } }
@@ -538,6 +550,12 @@ private fun HomeScreen(
         socket.on("request:updated", requestUpdatedListener)
         socket.on("location:updated", locationListener)
         socket.connect()
+        if (latestRequestId != null) {
+            socket.emit(
+                "request:join",
+                JSONObject().put("requestId", latestRequestId)
+            )
+        }
         onDispose {
             socket.off(Socket.EVENT_CONNECT, connectListener)
             socket.off(Socket.EVENT_DISCONNECT, disconnectListener)
@@ -1148,7 +1166,7 @@ private suspend fun createRealValetRequest(
         }
 
         val login = postJson(
-            "$API_BASE_URL/auth/demo-login",
+            "$API_BASE_URL/auth/login"
             JSONObject().apply {
                 put("role", "CUSTOMER")
                 put("phone", "+90$normalizedPhone")
