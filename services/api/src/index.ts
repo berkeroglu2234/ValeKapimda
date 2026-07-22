@@ -242,7 +242,11 @@ app.get('/places/reverse', async (req, res) => {
   try {
     const lat = Number(req.query.lat), lng = Number(req.query.lng);
     const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&accept-language=tr&lat=${lat}&lon=${lng}`, { headers: { 'User-Agent': 'ValeKapimda/1.0 (support@valekapimda.app)' } });
-    if (!response.ok) throw new Error('Adres servisi yanıt vermedi');
+    if (!response.ok) {
+  const text = await response.text();
+  console.log("Nominatim reverse hata:", response.status, text);
+  throw new Error(`Adres servisi hata verdi: ${response.status}`);
+}
     const data: any = await response.json();
     res.json({ displayName: data.display_name || `${lat}, ${lng}` });
   } catch (e: any) { res.status(502).json({ message: e.message }); }
@@ -253,7 +257,14 @@ app.get('/route', async (req, res) => {
     const fromLat = Number(req.query.fromLat), fromLng = Number(req.query.fromLng);
     const toLat = Number(req.query.toLat), toLng = Number(req.query.toLng);
     if (![fromLat,fromLng,toLat,toLng].every(Number.isFinite)) return res.status(400).json({ message: 'Koordinatlar geçersiz' });
-    const response = await fetch(`https://router.project-osrm.org/route/v1/driving/${fromLng},${fromLat};${toLng},${toLat}?overview=full&geometries=geojson`);
+    const response = await fetch(
+  `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&accept-language=tr`,
+  {
+    headers: {
+      "User-Agent": "ValeKapimda-App/1.0"
+    }
+  }
+);
     if (!response.ok) throw new Error('Rota servisi yanıt vermedi');
     const data: any = await response.json();
     const route = data.routes?.[0];

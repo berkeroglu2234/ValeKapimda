@@ -1095,14 +1095,54 @@ private fun fieldColors() = OutlinedTextFieldDefaults.colors(focusedBorderColor 
 
 
 @SuppressLint("MissingPermission")
-private fun fetchCurrentLocation(context: Context, callback: (LatLng?, String?) -> Unit) {
+private fun fetchCurrentLocation(
+    context: Context,
+    callback: (LatLng?, String?) -> Unit
+) {
     val client = LocationServices.getFusedLocationProviderClient(context)
-    client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
-        .addOnSuccessListener { location ->
-            if (location != null) callback(LatLng(location.latitude, location.longitude), null)
-            else callback(null, "Emülatörde konum seçilmemiş olabilir. Extended Controls > Location bölümünden konum gönderin.")
+
+    client.lastLocation
+        .addOnSuccessListener { last ->
+
+            if (last != null) {
+                callback(
+                    LatLng(last.latitude, last.longitude),
+                    null
+                )
+            } else {
+
+                client.getCurrentLocation(
+                    Priority.PRIORITY_HIGH_ACCURACY,
+                    null
+                )
+                    .addOnSuccessListener { current ->
+
+                        if (current != null) {
+                            callback(
+                                LatLng(current.latitude, current.longitude),
+                                null
+                            )
+                        } else {
+                            callback(
+                                null,
+                                "Konum alınamadı. GPS açık mı kontrol edin."
+                            )
+                        }
+                    }
+                    .addOnFailureListener {
+                        callback(
+                            null,
+                            it.message ?: "Konum servisi hatası"
+                        )
+                    }
+            }
         }
-        .addOnFailureListener { callback(null, it.message ?: "Konum servisi hatası") }
+        .addOnFailureListener {
+            callback(
+                null,
+                it.message ?: "Konum servisi hatası"
+            )
+        }
 }
 
 private fun directDistanceKm(a: LatLng, b: LatLng): Double {
