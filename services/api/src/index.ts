@@ -14,6 +14,35 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const secret = process.env.JWT_SECRET || 'dev-secret';
+async function sendNetgsmSms(phone: string, message: string) {
+  const usercode = process.env.NETGSM_USERCODE;
+  const password = process.env.NETGSM_PASSWORD;
+  const header = process.env.NETGSM_MSGHEADER;
+
+  if (!usercode || !password || !header) {
+    throw new Error('NetGSM ayarları eksik');
+  }
+
+  const params = new URLSearchParams({
+    usercode,
+    password,
+    gsmno: phone.replace(/\D/g, ''),
+    message,
+    msgheader: header
+  });
+
+  const response = await fetch(
+    `https://api.netgsm.com.tr/sms/send/get?${params.toString()}`
+  );
+
+  const text = await response.text();
+
+  if (!text.startsWith('00')) {
+    throw new Error(`NetGSM SMS hatası: ${text}`);
+  }
+
+  return text;
+}
 
 type AuthedRequest = express.Request & { user?: { id: string; role: string; fullName?: string } };
 function auth(req: AuthedRequest, res: express.Response, next: express.NextFunction) {
@@ -28,6 +57,23 @@ function role(...roles: string[]) {
 }
 
 app.get('/health', (_, res) => res.json({ ok: true, name: 'ValeKapımda API' }));
+app.post('/test-sms', async (req, res) => {
+  try {
+    const { phone } = req.body;
+
+    await sendNetgsmSms(
+      phone,
+      'ValeKapimda test mesajidir.'
+    );
+
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({
+      ok: false,
+      message: e.message
+    });
+  }
+});
 
 app.post('/auth/login', async (req, res) => {
   const schema = z.object({ role: z.enum(['CUSTOMER', 'DRIVER', 'ADMIN']), phone: z.string().min(5), fullName: z.string().min(2) });
@@ -103,7 +149,21 @@ app.post('/requests', auth, role('CUSTOMER'), async (req: AuthedRequest, res) =>
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
       [req.user!.id, v.vehicleId, v.pickupAddress, v.pickupLat, v.pickupLng, v.destinationAddress, v.destinationLat, v.destinationLng, v.distanceKm, v.quotedPrice]
     );
-    io.emit('request:new', r.rows[0]); res.status(201).json(r.rows[0]);
+
+    const customer = await pool.query(
+      `SELECT phone FROM users WHERE id=$1`,
+      [req.user!.id]
+    );
+
+    if (customer.rows[0]?.phone) {
+      await sendNetgsmSms(
+        customer.rows[0].phone,
+        "Vale talebiniz alinmistir. En kisa surede size vale yonlendirilecektir."
+      );
+    }
+
+    io.emit('request:new', r.rows[0]);
+    res.status(201).json(r.rows[0]);
   } catch (e: any) { res.status(500).json({ message: e.message }); }
 });
 

@@ -18,6 +18,27 @@ const server = http_1.default.createServer(app);
 const io = new socket_io_1.Server(server, { cors: { origin: '*' } });
 const pool = new pg_1.Pool({ connectionString: process.env.DATABASE_URL });
 const secret = process.env.JWT_SECRET || 'dev-secret';
+async function sendNetgsmSms(phone, message) {
+    const usercode = process.env.NETGSM_USERCODE;
+    const password = process.env.NETGSM_PASSWORD;
+    const header = process.env.NETGSM_MSGHEADER;
+    if (!usercode || !password || !header) {
+        throw new Error('NetGSM ayarları eksik');
+    }
+    const params = new URLSearchParams({
+        usercode,
+        password,
+        gsmno: phone.replace(/\D/g, ''),
+        message,
+        msgheader: header
+    });
+    const response = await fetch(`https://api.netgsm.com.tr/sms/send/get?${params.toString()}`);
+    const text = await response.text();
+    if (!text.startsWith('00')) {
+        throw new Error(`NetGSM SMS hatası: ${text}`);
+    }
+    return text;
+}
 function auth(req, res, next) {
     const token = req.headers.authorization?.replace('Bearer ', '');
     if (!token)
@@ -34,6 +55,19 @@ function role(...roles) {
     return (req, res, next) => roles.includes(req.user?.role || '') ? next() : res.status(403).json({ message: 'Yetkisiz' });
 }
 app.get('/health', (_, res) => res.json({ ok: true, name: 'ValeKapımda API' }));
+app.post('/test-sms', async (req, res) => {
+    try {
+        const { phone } = req.body;
+        await sendNetgsmSms(phone, 'ValeKapimda test mesajidir.');
+        res.json({ ok: true });
+    }
+    catch (e) {
+        res.status(500).json({
+            ok: false,
+            message: e.message
+        });
+    }
+});
 app.post('/auth/login', async (req, res) => {
     const schema = zod_1.z.object({ role: zod_1.z.enum(['CUSTOMER', 'DRIVER', 'ADMIN']), phone: zod_1.z.string().min(5), fullName: zod_1.z.string().min(2) });
     const parsed = schema.safeParse(req.body);
@@ -123,6 +157,10 @@ app.post('/requests', auth, role('CUSTOMER'), async (req, res) => {
         const v = p.data;
         const r = await pool.query(`INSERT INTO valet_requests(customer_id,vehicle_id,pickup_address,pickup_lat,pickup_lng,destination_address,destination_lat,destination_lng,distance_km,quoted_price)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`, [req.user.id, v.vehicleId, v.pickupAddress, v.pickupLat, v.pickupLng, v.destinationAddress, v.destinationLat, v.destinationLng, v.distanceKm, v.quotedPrice]);
+        const customer = await pool.query(`SELECT phone FROM users WHERE id=$1`, [req.user.id]);
+        if (customer.rows[0]?.phone) {
+            await sendNetgsmSms(customer.rows[0].phone, "Vale talebiniz alinmistir. En kisa surede size vale yonlendirilecektir.");
+        }
         io.emit('request:new', r.rows[0]);
         res.status(201).json(r.rows[0]);
     }
