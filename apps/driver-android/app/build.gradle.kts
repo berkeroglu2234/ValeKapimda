@@ -32,6 +32,7 @@ android {
 
 dependencies {
     implementation("com.google.android.gms:play-services-location:21.3.0")
+    implementation("com.google.maps.android:maps-compose:4.4.1")
 
     implementation("io.socket:socket.io-client:2.1.0") {
         exclude(group = "org.json", module = "json")

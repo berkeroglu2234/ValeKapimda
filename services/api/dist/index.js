@@ -88,17 +88,20 @@ app.get('/pricing', async (_, res) => {
 });
 app.get('/requests', auth, async (req, res) => {
     try {
-        let sql = 'SELECT * FROM valet_requests';
+        let sql = `SELECT vr.*, d.full_name AS driver_name, d.phone AS driver_phone, COALESCE(AVG(rt.score),0)::float AS driver_rating
+      FROM valet_requests vr
+      LEFT JOIN users d ON d.id=vr.driver_id
+      LEFT JOIN ratings rt ON rt.driver_id=vr.driver_id`;
         const params = [];
         if (req.user?.role === 'CUSTOMER') {
-            sql += ' WHERE customer_id=$1';
+            sql += ' WHERE vr.customer_id=$1';
             params.push(req.user.id);
         }
         if (req.user?.role === 'DRIVER') {
-            sql += " WHERE driver_id=$1 OR status='SEARCHING'";
+            sql += " WHERE vr.driver_id=$1 OR vr.status='SEARCHING'";
             params.push(req.user.id);
         }
-        sql += ' ORDER BY created_at DESC';
+        sql += ' GROUP BY vr.id,d.full_name,d.phone ORDER BY vr.created_at DESC';
         const r = await pool.query(sql, params);
         res.json(r.rows);
     }
@@ -143,6 +146,20 @@ app.patch('/requests/:id/status', auth, role('DRIVER', 'ADMIN'), async (req, res
         if (!r.rows[0])
             return res.status(409).json({ message: 'Talep başka bir vale tarafından alınmış veya bulunamadı' });
         io.emit('request:updated', r.rows[0]);
+        res.json(r.rows[0]);
+    }
+    catch (e) {
+        res.status(500).json({ message: e.message });
+    }
+});
+app.patch('/requests/:id/cancel', auth, role('CUSTOMER'), async (req, res) => {
+    try {
+        const r = await pool.query(`UPDATE valet_requests SET status='CANCELLED', updated_at=NOW()
+       WHERE id=$1::uuid AND customer_id=$2::uuid AND status IN ('SEARCHING','ASSIGNED','DRIVER_EN_ROUTE') RETURNING *`, [req.params.id, req.user.id]);
+        if (!r.rows[0])
+            return res.status(409).json({ message: 'Bu talep artık iptal edilemez' });
+        io.emit('request:updated', r.rows[0]);
+        io.to(`request:${req.params.id}`).emit('request:updated', r.rows[0]);
         res.json(r.rows[0]);
     }
     catch (e) {
@@ -273,7 +290,8 @@ app.get('/requests/:id', auth, async (req, res) => {
             params.push(req.user.id);
         }
         const r = await pool.query(`SELECT vr.*, v.plate,v.brand,v.model,v.color, c.full_name customer_name,c.phone customer_phone,
-      d.full_name driver_name,d.phone driver_phone, rt.score rating_score,rt.comment rating_comment
+      d.full_name driver_name,d.phone driver_phone, rt.score rating_score,rt.comment rating_comment,
+      (SELECT COALESCE(AVG(score),0)::float FROM ratings WHERE driver_id=vr.driver_id) driver_rating
       FROM valet_requests vr JOIN vehicles v ON v.id=vr.vehicle_id JOIN users c ON c.id=vr.customer_id
       LEFT JOIN users d ON d.id=vr.driver_id LEFT JOIN ratings rt ON rt.request_id=vr.id WHERE vr.id=$1${guard}`, params);
         if (!r.rows[0])
@@ -425,5 +443,18 @@ app.get('/driver/earnings', auth, role('DRIVER'), async (req, res) => {
         res.status(500).json({ message: e.message });
     }
 });
-io.on('connection', socket => { socket.on('location:update', data => socket.broadcast.emit('location:updated', data)); });
+io.on('connection', socket => {
+    socket.on('request:join', (requestId) => {
+        if (typeof requestId === 'string' && requestId.length > 10)
+            socket.join(`request:${requestId}`);
+    });
+    socket.on('request:leave', (requestId) => socket.leave(`request:${requestId}`));
+    socket.on('location:update', (data) => {
+        if (!data || typeof data.requestId !== 'string')
+            return;
+        const payload = { ...data, updatedAt: new Date().toISOString() };
+        io.to(`request:${data.requestId}`).emit('location:updated', payload);
+        socket.broadcast.emit('location:updated', payload);
+    });
+});
 server.listen(Number(process.env.PORT || 4000), () => console.log('ValeKapımda API http://localhost:' + (process.env.PORT || 4000)));

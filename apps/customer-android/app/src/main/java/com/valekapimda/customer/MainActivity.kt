@@ -3,6 +3,8 @@ package com.valekapimda.customer
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.content.pm.PackageManager
 import android.location.Location
 import android.os.Bundle
@@ -69,7 +71,10 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
+import com.google.android.gms.maps.model.MapStyleOptions
 import com.google.maps.android.compose.GoogleMap
+import com.google.maps.android.compose.MapProperties
+import com.google.maps.android.compose.MapUiSettings
 import com.google.maps.android.compose.Marker
 import com.google.maps.android.compose.Polyline
 import com.google.maps.android.compose.rememberCameraPositionState
@@ -130,6 +135,7 @@ private data class Vehicle(
 
 private data class PlaceSuggestion(val displayName: String, val point: LatLng)
 private data class RouteInfo(val distanceKm: Double, val durationMinutes: Int, val points: List<LatLng>)
+private data class DriverInfo(val name: String, val phone: String, val rating: Double)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -457,6 +463,7 @@ private fun HomeScreen(
     var requestStatus by remember { mutableStateOf("IDLE") }
     var socketConnected by remember { mutableStateOf(false) }
     var driverPoint by remember { mutableStateOf<LatLng?>(null) }
+    var driverInfo by remember { mutableStateOf<DriverInfo?>(null) }
 
     val latestRequestId by rememberUpdatedState(activeRequestId)
     val socket = remember {
@@ -465,6 +472,12 @@ private fun HomeScreen(
             reconnection = true
             timeout = 30_000
         })
+    }
+
+    LaunchedEffect(activeRequestId) {
+        val id = activeRequestId ?: return@LaunchedEffect
+        socket.emit("request:join", id)
+        fetchRequestDetails(phone, id).onSuccess { driverInfo = it }
     }
 
     DisposableEffect(socket) {
@@ -476,6 +489,7 @@ private fun HomeScreen(
                 scope.launch {
                     requestStatus = data.optString("status")
                     message = requestStatusText(requestStatus)
+                    latestRequestId?.let { id -> fetchRequestDetails(phone, id).onSuccess { driverInfo = it } }
                     if (requestStatus in listOf("COMPLETED", "CANCELLED")) {
                         requestCreated = false
                         driverPoint = null
@@ -547,6 +561,32 @@ private fun HomeScreen(
     val distanceKm = routeInfo?.distanceKm ?: 0.0
     val price = if (distanceKm > 0) (250 + distanceKm * 30).roundToInt() else 0
     val canCall = selected != null && pickupPoint != null && destinationPoint != null && routeInfo != null && !sending
+
+    if (requestCreated && pickupPoint != null && destinationPoint != null && activeRequestId != null) {
+        PremiumTrackingScreen(
+            pickup = pickupPoint!!,
+            destination = destinationPoint!!,
+            driverPoint = driverPoint,
+            routePoints = routeInfo?.points.orEmpty(),
+            status = requestStatus,
+            driverInfo = driverInfo,
+            vehicle = selected,
+            onCall = {
+                val number = driverInfo?.phone.orEmpty()
+                if (number.isNotBlank()) context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$number")))
+            },
+            onCancel = {
+                val id = activeRequestId
+                if (id != null) scope.launch {
+                    cancelRequest(phone, id).onSuccess {
+                        requestCreated = false; requestStatus = "CANCELLED"; driverPoint = null
+                        message = "Talep iptal edildi."
+                    }.onFailure { message = it.message ?: "İptal edilemedi" }
+                }
+            }
+        )
+        return
+    }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Spacer(Modifier.height(8.dp))
@@ -656,6 +696,83 @@ private fun HomeScreen(
             }
         }
         Spacer(Modifier.height(90.dp))
+    }
+}
+
+
+@Composable
+private fun PremiumTrackingScreen(
+    pickup: LatLng,
+    destination: LatLng,
+    driverPoint: LatLng?,
+    routePoints: List<LatLng>,
+    status: String,
+    driverInfo: DriverInfo?,
+    vehicle: Vehicle?,
+    onCall: () -> Unit,
+    onCancel: () -> Unit
+) {
+    val camera = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(driverPoint ?: pickup, 14f) }
+    var mapReady by remember { mutableStateOf(false) }
+    val animatedLat by animateFloatAsState((driverPoint?.latitude ?: pickup.latitude).toFloat(), label = "driverLat")
+    val animatedLng by animateFloatAsState((driverPoint?.longitude ?: pickup.longitude).toFloat(), label = "driverLng")
+    val animatedDriver = LatLng(animatedLat.toDouble(), animatedLng.toDouble())
+    val remainingKm = directDistanceKm(animatedDriver, if (status in listOf("IN_TRANSIT","DELIVERED")) destination else pickup)
+    val eta = maxOf(1, (remainingKm / 0.45).roundToInt())
+
+    LaunchedEffect(mapReady, animatedDriver, destination) {
+        if (!mapReady) return@LaunchedEffect
+        runCatching {
+            val bounds = com.google.android.gms.maps.model.LatLngBounds.builder()
+                .include(animatedDriver).include(pickup).include(destination).build()
+            camera.animate(CameraUpdateFactory.newLatLngBounds(bounds, 150))
+        }
+    }
+
+    Box(Modifier.fillMaxSize().background(Background)) {
+        GoogleMap(
+            modifier = Modifier.fillMaxSize(),
+            cameraPositionState = camera,
+            properties = MapProperties(
+                isTrafficEnabled = true,
+                mapStyleOptions = MapStyleOptions(DARK_MAP_JSON)
+            ),
+            uiSettings = MapUiSettings(zoomControlsEnabled = false, compassEnabled = true, myLocationButtonEnabled = false),
+            onMapLoaded = { mapReady = true }
+        ) {
+            Marker(state = rememberMarkerState(position = pickup), title = "Siz")
+            Marker(state = rememberMarkerState(position = destination), title = "Teslim noktası")
+            Marker(state = rememberMarkerState(position = animatedDriver), title = "Valeniz")
+            routePoints.takeIf { it.size > 1 }?.let { Polyline(points = it, color = Color(0xFF2F80ED), width = 14f) }
+        }
+
+        Card(
+            modifier = Modifier.align(Alignment.TopCenter).padding(18.dp).fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = Color(0xE6151A21)),
+            shape = RoundedCornerShape(22.dp)
+        ) {
+            Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column { Text(requestStatusLabel(status), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp); Text("Valeniz canlı olarak takip ediliyor", color = Muted, fontSize = 12.sp) }
+                Column(horizontalAlignment = Alignment.End) { Text("$eta dk", color = Orange, fontWeight = FontWeight.Black, fontSize = 24.sp); Text("%.1f km".format(remainingKm), color = Muted, fontSize = 12.sp) }
+            }
+        }
+
+        Card(
+            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(14.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xF510141A)),
+            shape = RoundedCornerShape(28.dp)
+        ) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column { Text(driverInfo?.name ?: "Valeniz atanıyor", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp); Text("★ ${"%.1f".format(driverInfo?.rating ?: 5.0)}", color = Orange) }
+                    Column(horizontalAlignment = Alignment.End) { Text(vehicle?.let { "${it.brand} ${it.model}" } ?: "Vale aracı", color = Color.White, fontWeight = FontWeight.SemiBold); Text(vehicle?.plate ?: "", color = Orange, fontWeight = FontWeight.Bold) }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(onClick = onCall, enabled = !driverInfo?.phone.isNullOrBlank(), modifier = Modifier.weight(1f), shape = RoundedCornerShape(16.dp)) { Text("📞 Ara") }
+                    Button(onClick = onCancel, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A2024)), shape = RoundedCornerShape(16.dp)) { Text("İptal", color = Danger) }
+                }
+            }
+        }
     }
 }
 
@@ -837,6 +954,8 @@ private suspend fun fetchRoute(from: LatLng, to: LatLng): Result<RouteInfo> = wi
     }
 }
 
+private const val DARK_MAP_JSON = """[{"elementType":"geometry","stylers":[{"color":"#101419"}]},{"elementType":"labels.text.fill","stylers":[{"color":"#8f9aa8"}]},{"elementType":"labels.text.stroke","stylers":[{"color":"#101419"}]},{"featureType":"road","elementType":"geometry","stylers":[{"color":"#252b33"}]},{"featureType":"road.highway","elementType":"geometry","stylers":[{"color":"#343b45"}]},{"featureType":"water","elementType":"geometry","stylers":[{"color":"#07111d"}]},{"featureType":"poi","elementType":"geometry","stylers":[{"color":"#171c22"}]}]"""
+
 private const val API_BASE_URL = "https://valekapimda-api.onrender.com"
 
 private suspend fun createRealValetRequest(
@@ -919,6 +1038,35 @@ private suspend fun createRealValetRequest(
     }.onFailure {
         Log.e("ValeKapimdaAPI", "Vale talebi oluşturulamadı", it)
     }
+}
+
+
+private suspend fun fetchRequestDetails(phone: String, requestId: String): Result<DriverInfo> = withContext(Dispatchers.IO) {
+    runCatching {
+        val token = demoCustomerLogin(phone).getString("token")
+        val o = getJsonObject("$API_BASE_URL/requests/$requestId", token)
+        DriverInfo(o.optString("driver_name", "Valeniz atanıyor"), o.optString("driver_phone", ""), o.optDouble("driver_rating", 5.0))
+    }
+}
+
+private suspend fun cancelRequest(phone: String, requestId: String): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+        val token = demoCustomerLogin(phone).getString("token")
+        requestJsonMethod("PATCH", "$API_BASE_URL/requests/$requestId/cancel", token)
+        Unit
+    }
+}
+
+private fun requestJsonMethod(method: String, url: String, token: String): JSONObject {
+    val c = URL(url).openConnection() as HttpURLConnection
+    try {
+        c.requestMethod = method; c.connectTimeout = 10_000; c.readTimeout = 15_000
+        c.setRequestProperty("Authorization", "Bearer $token"); c.setRequestProperty("Accept", "application/json")
+        val code = c.responseCode
+        val text = (if (code in 200..299) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
+        if (code !in 200..299) error("Sunucu $code: $text")
+        return if (text.isBlank()) JSONObject() else JSONObject(text)
+    } finally { c.disconnect() }
 }
 
 private suspend fun fetchCustomerHistory(phone: String): Result<List<HistoryItem>> = withContext(Dispatchers.IO) {

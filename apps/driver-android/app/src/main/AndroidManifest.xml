@@ -12,6 +12,10 @@
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.ValeKapimda">
 
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="AIzaSyC04GDOYzctT-vYxljavQqCKpSch4kJBQg" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true">
