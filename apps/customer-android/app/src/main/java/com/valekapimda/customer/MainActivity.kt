@@ -1324,7 +1324,7 @@ private fun demoCustomerLogin(phone: String): JSONObject {
     val normalizedPhone = phone.filter(Char::isDigit).takeLast(10)
     require(normalizedPhone.length == 10) { "Telefon numarası 10 haneli değil." }
     return postJson(
-        "$API_BASE_URL/auth/demo-login",
+        "$API_BASE_URL/auth/login",
         JSONObject().apply {
             put("role", "CUSTOMER")
             put("phone", "+90$normalizedPhone")
