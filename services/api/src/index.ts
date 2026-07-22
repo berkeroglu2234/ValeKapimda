@@ -83,7 +83,7 @@ app.get('/requests', auth, async (req: AuthedRequest, res) => {
     const params: any[] = [];
     if (req.user?.role === 'CUSTOMER') { sql += ' WHERE vr.customer_id=$1'; params.push(req.user.id); }
     if (req.user?.role === 'DRIVER') { sql += " WHERE vr.driver_id=$1 OR vr.status='SEARCHING'"; params.push(req.user.id); }
-    sql += ' GROUP BY vr.id,d.full_name,d.phone ORDER BY vr.created_at DESC';
+    sql += ` GROUP BY vr.id,d.full_name,d.phone,c.phone ORDER BY vr.created_at DESC`;
     const r = await pool.query(sql, params); res.json(r.rows);
   } catch (e: any) { res.status(500).json({ message: e.message }); }
 });
