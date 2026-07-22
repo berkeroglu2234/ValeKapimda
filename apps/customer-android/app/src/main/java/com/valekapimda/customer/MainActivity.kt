@@ -1241,7 +1241,7 @@ private suspend fun createRealValetRequest(
 
 private suspend fun fetchCustomerHistory(phone: String): Result<List<HistoryItem>> = withContext(Dispatchers.IO) {
     runCatching {
-        val login = demoCustomerLogin(phone)
+        val login = customerLogin(phone)
         val token = login.optString("token")
         if (token.isBlank()) error("Oturum anahtarı alınamadı.")
         val array = getJsonArray("$API_BASE_URL/requests", token)
@@ -1266,7 +1266,7 @@ private suspend fun fetchCustomerHistory(phone: String): Result<List<HistoryItem
 
 private suspend fun fetchCustomerProfile(phone: String): Result<CustomerProfile> = withContext(Dispatchers.IO) {
     runCatching {
-        val login = demoCustomerLogin(phone)
+        val login = customerLogin(phone)
         val user = login.optJSONObject("user") ?: error("Kullanıcı bilgisi alınamadı.")
         CustomerProfile(
             fullName = user.optString("full_name", "ValeKapımda Müşterisi"),
@@ -1278,7 +1278,7 @@ private suspend fun fetchCustomerProfile(phone: String): Result<CustomerProfile>
 
 private suspend fun restoreActiveRequest(phone: String): Result<JSONObject?> = withContext(Dispatchers.IO) {
     runCatching {
-        val login = demoCustomerLogin(phone)
+        val login = customerLogin(phone)
         val token = login.optString("token")
         val array = getJsonArray("$API_BASE_URL/requests", token)
         (0 until array.length()).map { array.getJSONObject(it) }.firstOrNull {
@@ -1289,14 +1289,14 @@ private suspend fun restoreActiveRequest(phone: String): Result<JSONObject?> = w
 
 private suspend fun fetchRequestDetails(phone: String, requestId: String): Result<JSONObject> = withContext(Dispatchers.IO) {
     runCatching {
-        val token = demoCustomerLogin(phone).optString("token")
+        val token = customerLogin(phone).optString("token")
         getJsonObject("$API_BASE_URL/requests/$requestId", token)
     }
 }
 
 private suspend fun cancelCustomerRequest(phone: String, requestId: String): Result<Unit> = withContext(Dispatchers.IO) {
     runCatching {
-        val token = demoCustomerLogin(phone).optString("token")
+        val token = customerLogin(phone).optString("token")
         patchJson("$API_BASE_URL/requests/$requestId/cancel", JSONObject(), token)
         Unit
     }
@@ -1320,7 +1320,7 @@ private fun patchJson(url: String, body: JSONObject, token: String? = null): JSO
     } finally { connection.disconnect() }
 }
 
-private fun demoCustomerLogin(phone: String): JSONObject {
+private fun customerLogin(phone: String): JSONObject {
     val normalizedPhone = phone.filter(Char::isDigit).takeLast(10)
     require(normalizedPhone.length == 10) { "Telefon numarası 10 haneli değil." }
     return postJson(
