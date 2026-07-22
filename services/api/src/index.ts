@@ -74,10 +74,12 @@ app.get('/pricing', async (_, res) => {
 
 app.get('/requests', auth, async (req: AuthedRequest, res) => {
   try {
-    let sql = `SELECT vr.*, d.full_name AS driver_name, d.phone AS driver_phone, COALESCE(AVG(rt.score),0)::float AS driver_rating
+    let sql = `SELECT  vr.*, vr.distance_km AS "distanceKm", vr.quoted_price AS "quotedPrice", c.phone AS "customerPhone", d.full_name AS driver_name, d.phone AS driver_phone, COALESCE(AVG(rt.score),0)::float AS driver_rating
       FROM valet_requests vr
       LEFT JOIN users d ON d.id=vr.driver_id
+      LEFT JOIN users c ON c.id=vr.customer_id
       LEFT JOIN ratings rt ON rt.driver_id=vr.driver_id`;
+    
     const params: any[] = [];
     if (req.user?.role === 'CUSTOMER') { sql += ' WHERE vr.customer_id=$1'; params.push(req.user.id); }
     if (req.user?.role === 'DRIVER') { sql += " WHERE vr.driver_id=$1 OR vr.status='SEARCHING'"; params.push(req.user.id); }
@@ -151,10 +153,28 @@ app.get('/places/search', async (req, res) => {
       ? `&viewbox=${Number(req.query.lng)-0.6},${Number(req.query.lat)+0.4},${Number(req.query.lng)+0.6},${Number(req.query.lat)-0.4}&bounded=0`
       : '';
     const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=7&countrycodes=tr&accept-language=tr&q=${encodeURIComponent(q)}${viewbox}`;
-    const response = await fetch(url, { headers: { 'User-Agent': 'ValeKapimda/1.0 (support@valekapimda.app)' } });
-    if (!response.ok) throw new Error('Adres servisi yanıt vermedi');
-    const data: any[] = await response.json();
-    res.json(data.map(x => ({ displayName: x.display_name, lat: Number(x.lat), lng: Number(x.lon) })));
+    const response = await fetch(url, {
+  headers: {
+    "User-Agent": "ValeKapimda-App"
+  }
+});
+
+const text = await response.text();
+
+if (!response.ok) {
+  console.log("Nominatim hata:", response.status, text);
+  throw new Error(`Adres servisi hata verdi: ${response.status}`);
+}
+
+const data:any[] = JSON.parse(text);
+
+res.json(
+  data.map(x => ({
+    displayName: x.display_name,
+    lat: Number(x.lat),
+    lng: Number(x.lon)
+  }))
+);
   } catch (e: any) { res.status(502).json({ message: e.message }); }
 });
 
