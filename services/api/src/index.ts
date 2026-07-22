@@ -29,7 +29,7 @@ function role(...roles: string[]) {
 
 app.get('/health', (_, res) => res.json({ ok: true, name: 'ValeKapımda API' }));
 
-app.post('/auth/demo-login', async (req, res) => {
+app.post('/auth/login', async (req, res) => {
   const schema = z.object({ role: z.enum(['CUSTOMER', 'DRIVER', 'ADMIN']), phone: z.string().min(5), fullName: z.string().min(2) });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json(parsed.error.flatten());

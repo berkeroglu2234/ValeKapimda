@@ -34,7 +34,7 @@ function role(...roles) {
     return (req, res, next) => roles.includes(req.user?.role || '') ? next() : res.status(403).json({ message: 'Yetkisiz' });
 }
 app.get('/health', (_, res) => res.json({ ok: true, name: 'ValeKapımda API' }));
-app.post('/auth/demo-login', async (req, res) => {
+app.post('/auth/login', async (req, res) => {
     const schema = zod_1.z.object({ role: zod_1.z.enum(['CUSTOMER', 'DRIVER', 'ADMIN']), phone: zod_1.z.string().min(5), fullName: zod_1.z.string().min(2) });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success)
@@ -88,9 +88,10 @@ app.get('/pricing', async (_, res) => {
 });
 app.get('/requests', auth, async (req, res) => {
     try {
-        let sql = `SELECT vr.*, d.full_name AS driver_name, d.phone AS driver_phone, COALESCE(AVG(rt.score),0)::float AS driver_rating
+        let sql = `SELECT  vr.*, vr.distance_km AS "distanceKm", vr.quoted_price AS "quotedPrice", c.phone AS "customerPhone", d.full_name AS driver_name, d.phone AS driver_phone, COALESCE(AVG(rt.score),0)::float AS driver_rating
       FROM valet_requests vr
       LEFT JOIN users d ON d.id=vr.driver_id
+      LEFT JOIN users c ON c.id=vr.customer_id
       LEFT JOIN ratings rt ON rt.driver_id=vr.driver_id`;
         const params = [];
         if (req.user?.role === 'CUSTOMER') {
@@ -101,7 +102,7 @@ app.get('/requests', auth, async (req, res) => {
             sql += " WHERE vr.driver_id=$1 OR vr.status='SEARCHING'";
             params.push(req.user.id);
         }
-        sql += ' GROUP BY vr.id,d.full_name,d.phone ORDER BY vr.created_at DESC';
+        sql += ` GROUP BY vr.id,d.full_name,d.phone,c.phone ORDER BY vr.created_at DESC`;
         const r = await pool.query(sql, params);
         res.json(r.rows);
     }
@@ -175,11 +176,22 @@ app.get('/places/search', async (req, res) => {
             ? `&viewbox=${Number(req.query.lng) - 0.6},${Number(req.query.lat) + 0.4},${Number(req.query.lng) + 0.6},${Number(req.query.lat) - 0.4}&bounded=0`
             : '';
         const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=7&countrycodes=tr&accept-language=tr&q=${encodeURIComponent(q)}${viewbox}`;
-        const response = await fetch(url, { headers: { 'User-Agent': 'ValeKapimda/1.0 (support@valekapimda.app)' } });
-        if (!response.ok)
-            throw new Error('Adres servisi yanıt vermedi');
-        const data = await response.json();
-        res.json(data.map(x => ({ displayName: x.display_name, lat: Number(x.lat), lng: Number(x.lon) })));
+        const response = await fetch(url, {
+            headers: {
+                "User-Agent": "ValeKapimda-App"
+            }
+        });
+        const text = await response.text();
+        if (!response.ok) {
+            console.log("Nominatim hata:", response.status, text);
+            throw new Error(`Adres servisi hata verdi: ${response.status}`);
+        }
+        const data = JSON.parse(text);
+        res.json(data.map(x => ({
+            displayName: x.display_name,
+            lat: Number(x.lat),
+            lng: Number(x.lon)
+        })));
     }
     catch (e) {
         res.status(502).json({ message: e.message });
