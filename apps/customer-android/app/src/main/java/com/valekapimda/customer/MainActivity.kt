@@ -1145,6 +1145,17 @@ private suspend fun fetchRoute(from: LatLng, to: LatLng): Result<RouteInfo> = wi
 }
 
 private const val API_BASE_URL = "https://valekapimda-api.onrender.com"
+private fun saveAuthToken(context: Context, token: String) {
+    context.getSharedPreferences("vale_auth", Context.MODE_PRIVATE)
+        .edit()
+        .putString("token", token)
+        .apply()
+}
+
+private fun getAuthToken(context: Context): String? {
+    return context.getSharedPreferences("vale_auth", Context.MODE_PRIVATE)
+        .getString("token", null)
+}
 
 private suspend fun createRealValetRequest(
     phone: String,
@@ -1166,7 +1177,7 @@ private suspend fun createRealValetRequest(
         }
 
         val login = postJson(
-            "$API_BASE_URL/auth/login"
+            "$API_BASE_URL/auth/login",
             JSONObject().apply {
                 put("role", "CUSTOMER")
                 put("phone", "+90$normalizedPhone")
