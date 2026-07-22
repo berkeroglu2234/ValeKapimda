@@ -694,8 +694,14 @@ private fun jsonToDriverRequest(json: JSONObject): DriverRequest {
         id = json.optString("id"),
         pickupAddress = json.optString("pickup_address", "Alım noktası"),
         destinationAddress = json.optString("destination_address", "Varış noktası"),
-        distanceKm = json.optDouble("distance_km", 0.0),
-        quotedPrice = json.optDouble("quoted_price", 0.0),
+        distanceKm = json.optDouble(
+            "distanceKm",
+            json.optDouble("distance_km", 0.0)
+        ),    
+        quotedPrice = json.optDouble(
+            "quotedPrice",
+            json.optDouble("quoted_price", 0.0)
+        ),
         status = json.optString("status", "SEARCHING"),
         pickupLat = json.optDouble("pickup_lat", 0.0),
         pickupLng = json.optDouble("pickup_lng", 0.0),
