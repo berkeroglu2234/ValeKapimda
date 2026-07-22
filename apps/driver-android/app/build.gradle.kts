@@ -31,6 +31,8 @@ android {
 }
 
 dependencies {
+    implementation("com.google.android.gms:play-services-location:21.3.0")
+
     implementation("io.socket:socket.io-client:2.1.0") {
         exclude(group = "org.json", module = "json")
     }
@@ -41,7 +43,4 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.foundation:foundation")
     debugImplementation("androidx.compose.ui:ui-tooling")
-    implementation("io.socket:socket.io-client:2.1.0") {
-        exclude(group = "org.json", module = "json")
-    }
 }

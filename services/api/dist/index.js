@@ -132,7 +132,16 @@ app.patch('/requests/:id/status', auth, role('DRIVER', 'ADMIN'), async (req, res
     if (!p.success)
         return res.status(400).json(p.error.flatten());
     try {
-        const r = await pool.query(`UPDATE valet_requests SET status=$1, driver_id=COALESCE(driver_id,$2), completed_at=CASE WHEN $1='COMPLETED' THEN NOW() ELSE completed_at END, updated_at=NOW() WHERE id=$3 RETURNING *`, [p.data.status, req.user.role === 'DRIVER' ? req.user.id : null, req.params.id]);
+        const r = await pool.query(`UPDATE valet_requests
+       SET status=$1::text,
+           driver_id=COALESCE(driver_id,$2::uuid),
+           completed_at=CASE WHEN $1::text='COMPLETED' THEN NOW() ELSE completed_at END,
+           updated_at=NOW()
+       WHERE id=$3::uuid
+         AND ($1::text <> 'ASSIGNED' OR status='SEARCHING' OR driver_id=$2::uuid)
+       RETURNING *`, [p.data.status, req.user.role === 'DRIVER' ? req.user.id : null, req.params.id]);
+        if (!r.rows[0])
+            return res.status(409).json({ message: 'Talep başka bir vale tarafından alınmış veya bulunamadı' });
         io.emit('request:updated', r.rows[0]);
         res.json(r.rows[0]);
     }

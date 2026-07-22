@@ -67,7 +67,6 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
-import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.GoogleMap
@@ -148,7 +147,7 @@ private fun ValeKapimdaApp() {
             Vehicle(1, "34 VK 2026", "BMW", "520i", "Siyah", "2022", "Otomatik", true)
         )
     }
-    var selectedVehicleId by remember { mutableStateOf(1) }
+    var selectedVehicleId by remember { mutableStateOf<Int?>(vehicles.firstOrNull()?.id) }
 
     MaterialTheme(colorScheme = androidx.compose.material3.darkColorScheme(primary = Orange)) {
         Surface(modifier = Modifier.fillMaxSize(), color = Background) {
@@ -170,7 +169,7 @@ private fun ValeKapimdaApp() {
                     onSelect = { selectedVehicleId = it },
                     onDelete = { id ->
                         vehicles.removeAll { it.id == id }
-                        if (selectedVehicleId == id) selectedVehicleId = vehicles.firstOrNull()?.id ?: -1
+                        if (selectedVehicleId == id) { selectedVehicleId = vehicles.firstOrNull()?.id }
                     },
                     onAdd = { screen = Screen.AddVehicle },
                     onBack = { screen = Screen.Home }
@@ -241,7 +240,7 @@ private fun OtpScreen(phone: String, onBack: () -> Unit, onVerified: () -> Unit)
 @Composable
 private fun CustomerShell(
     vehicles: List<Vehicle>,
-    selectedVehicleId: Int,
+    selectedVehicleId: Int?,
     onSelectVehicle: (Int) -> Unit,
     onOpenVehicles: () -> Unit,
     onLogout: () -> Unit,
@@ -359,7 +358,7 @@ private fun HistoryCard(item: HistoryItem) {
 }
 
 @Composable
-private fun ProfileScreen(
+fun ProfileScreen(
     phone: String,
     vehicleCount: Int,
     onOpenVehicles: () -> Unit,
@@ -431,9 +430,10 @@ private fun StatusCard(text: String) {
 @Composable
 private fun HomeScreen(
     vehicles: List<Vehicle>,
-    selectedVehicleId: Int,
+    selectedVehicleId: Int?,
     onSelectVehicle: (Int) -> Unit,
     onOpenVehicles: () -> Unit,
+    onLogout: () -> Unit,
     phone: String
 ) {
     val context = LocalContext.current
@@ -513,8 +513,9 @@ private fun HomeScreen(
         pickupPoint = point
         pickup = coordinateLabel("Mevcut konum", point)
         scope.launch {
-            reverseGeocode(point).onSuccess { pickup = it }
-            cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(point, 15f))
+            reverseGeocode(point)
+                .onSuccess { pickup = it }
+                .onFailure { message = "Adres bilgisi alınamadı." }
         }
     }
 
@@ -538,8 +539,6 @@ private fun HomeScreen(
             fetchRoute(from, to).onSuccess {
                 routeInfo = it
                 message = "Rota hazır: ${"%.1f".format(it.distanceKm)} km, yaklaşık ${it.durationMinutes} dakika."
-                val bounds = com.google.android.gms.maps.model.LatLngBounds.builder().include(from).include(to).build()
-                cameraPositionState.animate(CameraUpdateFactory.newLatLngBounds(bounds, 90))
             }.onFailure { message = "Rota alınamadı: ${it.message}" }
             routeLoading = false
         }
@@ -650,7 +649,7 @@ private fun HomeScreen(
             val vehicle = selected ?: return@PrimaryButton
             sending = true
             scope.launch {
-                createRealValetRequest(phone, vehicle, pickup, p, destination, d, distanceKm, price)
+                createRealValetRequest( phone, vehicle, pickup, p, destination, d, distanceKm, price.toDouble() ) { stage -> message = stage }
                     .onSuccess { id -> activeRequestId = id; requestCreated = true; requestStatus = "SEARCHING"; mapExpanded = true; message = "Talebiniz oluşturuldu, uygun vale aranıyor." }
                     .onFailure { message = "Talep oluşturulamadı: ${it.message}" }
                 sending = false
@@ -661,7 +660,7 @@ private fun HomeScreen(
 }
 
 @Composable
-private fun VehiclesScreen(vehicles: List<Vehicle>, selectedVehicleId: Int, onSelect: (Int) -> Unit, onDelete: (Int) -> Unit, onAdd: () -> Unit, onBack: () -> Unit) {
+private fun VehiclesScreen(vehicles: List<Vehicle>, selectedVehicleId: Int?, onSelect: (Int) -> Unit, onDelete: (Int) -> Unit, onAdd: () -> Unit, onBack: () -> Unit) {
     BackHandler(onBack = onBack)
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Spacer(Modifier.height(12.dp)); TopBar("Araçlarım", onBack)
