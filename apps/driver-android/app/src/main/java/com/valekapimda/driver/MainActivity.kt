@@ -2,9 +2,10 @@ package com.valekapimda.driver
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.content.Intent
-import android.net.Uri
+import android.os.Build
 
+import android.net.Uri
+import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -12,7 +13,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -35,6 +34,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
+import com.valekapimda.driver.ui.theme.ValeKapimdaTheme
+import com.valekapimda.driver.PremiumDriverHome
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -44,7 +45,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
@@ -54,17 +54,6 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
-import com.google.android.gms.maps.CameraUpdateFactory
-import com.google.android.gms.maps.model.CameraPosition
-import com.google.android.gms.maps.model.LatLng
-import com.google.android.gms.maps.model.MapStyleOptions
-import com.google.maps.android.compose.GoogleMap
-import com.google.maps.android.compose.MapProperties
-import com.google.maps.android.compose.MapUiSettings
-import com.google.maps.android.compose.Marker
-import com.google.maps.android.compose.Polyline
-import com.google.maps.android.compose.rememberCameraPositionState
-import com.google.maps.android.compose.rememberMarkerState
 import io.socket.client.IO
 import io.socket.client.Socket
 import kotlinx.coroutines.Dispatchers
@@ -76,23 +65,16 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
-private const val DRIVER_DARK_MAP_JSON = """[{"elementType":"geometry","stylers":[{"color":"#101419"}]},{"elementType":"labels.text.fill","stylers":[{"color":"#8f9aa8"}]},{"elementType":"labels.text.stroke","stylers":[{"color":"#101419"}]},{"featureType":"road","elementType":"geometry","stylers":[{"color":"#252b33"}]},{"featureType":"water","elementType":"geometry","stylers":[{"color":"#07111d"}]}]"""
-
 private const val API_BASE_URL = "https://valekapimda-api.onrender.com"
 
-private data class DriverRequest(
+data class DriverRequest(
     val id: String,
     val pickupAddress: String,
     val destinationAddress: String,
     val distanceKm: Double,
     val quotedPrice: Double,
     val status: String,
-    val pickupLat: Double,
-    val pickupLng: Double,
-    val destinationLat: Double,
-    val destinationLng: Double,
-    val customerName: String = "Müşteri",
-    val customerPhone: String = ""
+    val customerPhone: String,
 )
 
 class MainActivity : ComponentActivity() {
@@ -112,11 +94,19 @@ fun DriverApp() {
     var connected by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(true) }
     var message by remember { mutableStateOf("Sunucuya bağlanılıyor...") }
+	
     var token by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     var locationPermission by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) }
-    var currentLocation by remember { mutableStateOf<LatLng?>(null) }
     val locationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { locationPermission = it }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    val backgroundPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     val socket = remember {
         IO.socket(
@@ -251,36 +241,24 @@ fun DriverApp() {
 
 
     LaunchedEffect(activeRequest?.id, locationPermission) {
-        val requestId = activeRequest?.id ?: return@LaunchedEffect
+        val requestId = activeRequest?.id
+        if (requestId == null) {
+            DriverLocationService.stop(context)
+            return@LaunchedEffect
+        }
         if (!locationPermission) {
             locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
             return@LaunchedEffect
         }
-        val client = LocationServices.getFusedLocationProviderClient(context)
-        while (activeRequest?.id == requestId) {
-            try {
-                client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).addOnSuccessListener { loc ->
-                    if (loc != null) {
-                        currentLocation = LatLng(loc.latitude, loc.longitude)
-                    }
-                    if (loc != null && socket.connected()) {
-                        socket.emit("location:update", JSONObject().apply {
-                            put("requestId", requestId)
-                            put("lat", loc.latitude)
-                            put("lng", loc.longitude)
-                            put("timestamp", System.currentTimeMillis())
-                        })
-                    }
-                }
-            } catch (_: SecurityException) { }
-            delay(5_000)
+        if (Build.VERSION.SDK_INT >= 29 && ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            backgroundPermissionLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
         }
+        DriverLocationService.start(context, requestId)
     }
 
-    MaterialTheme(
-        colorScheme = darkColorScheme(primary = Color(0xFFFF9800))
-    ) {
-        Surface(
+    ValeKapimdaTheme {
+
+    Surface(
             modifier = Modifier.fillMaxSize(),
             color = Color(0xFF0B0F14)
         ) {
@@ -341,9 +319,8 @@ fun DriverApp() {
                 if (loading) {
                     CircularProgressIndicator()
                 } else if (currentActiveRequest != null) {
-                    DriverNavigationScreen(
+                    ActiveRequestCard(
                         request = currentActiveRequest,
-                        currentLocation = currentLocation,
                         enabled = token != null,
                         onAdvance = { nextStatus ->
                             val currentToken = token
@@ -363,6 +340,7 @@ fun DriverApp() {
                                             updated.status == "CANCELLED"
                                         ) {
                                             available = true
+                                            DriverLocationService.stop(context)
                                             null
                                         } else {
                                             available = false
@@ -390,6 +368,7 @@ fun DriverApp() {
                                     ).onSuccess {
                                         activeRequest = null
                                         available = true
+                                        DriverLocationService.stop(context)
                                         message = "Görev iptal edildi."
                                     }.onFailure {
                                         message = "Görev iptal edilemedi: ${it.message}"
@@ -483,6 +462,72 @@ private fun RequestCard(
                 color = Color(0xFFFF9800),
                 fontWeight = FontWeight.Bold
             )
+            val context = LocalContext.current
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+
+                Button(
+                    onClick = {
+                        val intent = Intent(
+                            Intent.ACTION_DIAL,
+                            Uri.parse("tel:${request.customerPhone}")
+                        )
+                        context.startActivity(intent)
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF202832)
+                    )
+                ) {
+                    Text("📞 Ara")
+                }
+
+
+                Button(
+                    onClick = {
+                        // mesaj ekranı daha sonra bağlanacak
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFFF9800)
+                    )
+                ) {
+                    Text("💬 Mesaj")
+                }
+            }
+
+
+            Button(
+                onClick = {
+
+                    val uri = Uri.parse(
+                        "google.navigation:q=${request.destinationAddress}"
+                    )
+
+                    val intent = Intent(
+                        Intent.ACTION_VIEW,
+                        uri
+                    )
+
+                    intent.setPackage("com.google.android.apps.maps")
+
+                    context.startActivity(intent)
+
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFFFF9800)
+                )
+            ) {
+                Text(
+                    "🧭 Konum Başlat",
+                    color = Color.Black,
+                    fontWeight = FontWeight.Bold
+                )
+            }
 
             Row(
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -504,78 +549,6 @@ private fun RequestCard(
                 ) {
                     Text("Kabul Et")
                 }
-            }
-        }
-    }
-}
-
-
-@Composable
-private fun DriverNavigationScreen(
-    request: DriverRequest,
-    currentLocation: LatLng?,
-    enabled: Boolean,
-    onAdvance: (String) -> Unit,
-    onCancel: () -> Unit
-) {
-    val context = LocalContext.current
-    val pickup = LatLng(request.pickupLat, request.pickupLng)
-    val destination = LatLng(request.destinationLat, request.destinationLng)
-    val target = if (request.status in listOf("IN_TRANSIT", "DELIVERED")) destination else pickup
-    val camera = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(currentLocation ?: target, 15f) }
-    var mapReady by remember { mutableStateOf(false) }
-    var route by remember { mutableStateOf<List<LatLng>>(emptyList()) }
-    var eta by remember { mutableStateOf(0) }
-    var km by remember { mutableStateOf(0.0) }
-    val next = nextDriverStatus(request.status)
-
-    LaunchedEffect(currentLocation, target) {
-        val from = currentLocation ?: return@LaunchedEffect
-        fetchDriverRoute(from, target).onSuccess { info -> route = info.first; km = info.second; eta = info.third }
-        if (mapReady) runCatching {
-            val b = com.google.android.gms.maps.model.LatLngBounds.builder().include(from).include(target).build()
-            camera.animate(CameraUpdateFactory.newLatLngBounds(b, 150))
-        }
-    }
-
-    Box(Modifier.fillMaxWidth().height(720.dp)) {
-        GoogleMap(
-            modifier = Modifier.fillMaxSize(),
-            cameraPositionState = camera,
-            properties = MapProperties(isTrafficEnabled = true, mapStyleOptions = MapStyleOptions(DRIVER_DARK_MAP_JSON)),
-            uiSettings = MapUiSettings(zoomControlsEnabled = false, compassEnabled = true),
-            onMapLoaded = { mapReady = true }
-        ) {
-            Marker(state = rememberMarkerState(position = pickup), title = "Müşteri")
-            Marker(state = rememberMarkerState(position = destination), title = "Teslim noktası")
-            currentLocation?.let { Marker(state = rememberMarkerState(position = it), title = "Konumunuz") }
-            route.takeIf { it.size > 1 }?.let { Polyline(points = it, color = Color(0xFF2F80ED), width = 14f) }
-        }
-
-        Card(
-            modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xEE151B23)), shape = RoundedCornerShape(22.dp)
-        ) {
-            Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Column { Text(driverStatusText(request.status), color = Color.White, fontWeight = FontWeight.Bold); Text(if (target == pickup) request.pickupAddress else request.destinationAddress, color = Color(0xFF9AA4B2), fontSize = 12.sp) }
-                Column(horizontalAlignment = Alignment.End) { Text("${maxOf(1, eta)} dk", color = Color(0xFFFF9800), fontSize = 24.sp, fontWeight = FontWeight.Black); Text("%.1f km".format(km), color = Color(0xFF9AA4B2)) }
-            }
-        }
-
-        Card(
-            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(14.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xF510141A)), shape = RoundedCornerShape(28.dp)
-        ) {
-            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(request.customerName, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Text("📍 ${request.pickupAddress}", color = Color.White, fontSize = 13.sp)
-                Text("🏁 ${request.destinationAddress}", color = Color.White, fontSize = 13.sp)
-                Button(onClick = {
-                    val uri = Uri.parse("google.navigation:q=${target.latitude},${target.longitude}&mode=d")
-                    context.startActivity(Intent(Intent.ACTION_VIEW, uri).apply { setPackage("com.google.android.apps.maps") })
-                }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("Navigasyonu Başlat") }
-                if (next != null) Button(onClick = { onAdvance(next.first) }, enabled = enabled, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800)), shape = RoundedCornerShape(16.dp)) { Text(next.second) }
-                OutlinedButton(onClick = onCancel, enabled = enabled, modifier = Modifier.fillMaxWidth()) { Text("Görevi İptal Et") }
             }
         }
     }
@@ -623,6 +596,72 @@ private fun ActiveRequestCard(
                 color = Color(0xFFFF9800),
                 fontWeight = FontWeight.Bold
             )
+            val context = LocalContext.current
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+
+                Button(
+                    onClick = {
+                        val intent = Intent(
+                            Intent.ACTION_DIAL,
+                            Uri.parse("tel:${request.customerPhone}")
+                        )
+                        context.startActivity(intent)
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF202832)
+                    )
+                ) {
+                    Text("📞 Ara")
+                }
+
+
+                Button(
+                    onClick = {
+                        // mesaj sistemi sonra bağlanacak
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFFF9800)
+                    )
+                ) {
+                    Text("💬 Mesaj")
+                }
+            }
+
+
+            Button(
+                onClick = {
+
+                    val uri = Uri.parse(
+                        "google.navigation:q=${request.destinationAddress}"
+                    )
+
+                    val intent = Intent(
+                        Intent.ACTION_VIEW,
+                        uri
+                    )
+
+                    intent.setPackage("com.google.android.apps.maps")
+
+                    context.startActivity(intent)
+
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFFFF9800)
+                )
+            ) {
+                Text(
+                    "🧭 Konum Başlat",
+                    color = Color.Black,
+                    fontWeight = FontWeight.Bold
+                )
+            }
 
             if (next != null) {
                 Button(
@@ -690,19 +729,15 @@ private fun EmptyCard(text: String) {
 }
 
 private fun jsonToDriverRequest(json: JSONObject): DriverRequest {
+
     return DriverRequest(
         id = json.optString("id"),
-        pickupAddress = json.optString("pickup_address", "Alım noktası"),
-        destinationAddress = json.optString("destination_address", "Varış noktası"),
-        distanceKm = json.optDouble("distance_km", 0.0),
-        quotedPrice = json.optDouble("quoted_price", 0.0),
-        status = json.optString("status", "SEARCHING"),
-        pickupLat = json.optDouble("pickup_lat", 0.0),
-        pickupLng = json.optDouble("pickup_lng", 0.0),
-        destinationLat = json.optDouble("destination_lat", 0.0),
-        destinationLng = json.optDouble("destination_lng", 0.0),
-        customerName = json.optString("customer_name", "Müşteri"),
-        customerPhone = json.optString("customer_phone", "")
+        pickupAddress = json.optString("pickupAddress"),
+        destinationAddress = json.optString("destinationAddress"),
+        distanceKm = json.optDouble("distanceKm", 0.0),
+        quotedPrice = json.optDouble("quotedPrice", 0.0),
+        status = json.optString("status"),
+        customerPhone = json.optString("customerPhone")
     )
 }
 
@@ -769,16 +804,6 @@ private suspend fun updateRequestStatus(
         )
 
         jsonToDriverRequest(response)
-    }
-}
-
-
-private suspend fun fetchDriverRoute(from: LatLng, to: LatLng): Result<Triple<List<LatLng>, Double, Int>> = withContext(Dispatchers.IO) {
-    runCatching {
-        val o = requestJson("GET", "$API_BASE_URL/route?fromLat=${from.latitude}&fromLng=${from.longitude}&toLat=${to.latitude}&toLng=${to.longitude}")
-        val a = o.getJSONArray("points")
-        val points = (0 until a.length()).map { i -> val p = a.getJSONArray(i); LatLng(p.getDouble(0), p.getDouble(1)) }
-        Triple(points, o.optDouble("distanceKm", 0.0), o.optInt("durationMinutes", 0))
     }
 }
 

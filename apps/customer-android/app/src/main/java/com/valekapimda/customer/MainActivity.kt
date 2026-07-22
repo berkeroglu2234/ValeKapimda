@@ -15,15 +15,19 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -41,6 +45,8 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.MaterialTheme
+import com.valekapimda.customer.ui.theme.ValeKapimdaTheme
+import com.valekapimda.customer.ui.components.PremiumPrimaryButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -58,8 +64,11 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -71,10 +80,7 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
-import com.google.android.gms.maps.model.MapStyleOptions
 import com.google.maps.android.compose.GoogleMap
-import com.google.maps.android.compose.MapProperties
-import com.google.maps.android.compose.MapUiSettings
 import com.google.maps.android.compose.Marker
 import com.google.maps.android.compose.Polyline
 import com.google.maps.android.compose.rememberCameraPositionState
@@ -135,7 +141,7 @@ private data class Vehicle(
 
 private data class PlaceSuggestion(val displayName: String, val point: LatLng)
 private data class RouteInfo(val distanceKm: Double, val durationMinutes: Int, val points: List<LatLng>)
-private data class DriverInfo(val name: String, val phone: String, val rating: Double)
+private data class DriverInfo(val name: String, val phone: String, val rating: Double, val plate: String)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -155,7 +161,7 @@ private fun ValeKapimdaApp() {
     }
     var selectedVehicleId by remember { mutableStateOf<Int?>(vehicles.firstOrNull()?.id) }
 
-    MaterialTheme(colorScheme = androidx.compose.material3.darkColorScheme(primary = Orange)) {
+    ValeKapimdaTheme {
         Surface(modifier = Modifier.fillMaxSize(), color = Background) {
             when (screen) {
                 Screen.Splash -> SplashScreen { screen = Screen.Login }
@@ -253,7 +259,9 @@ private fun CustomerShell(
     phone: String
 ) {
     var selectedTab by remember { mutableStateOf(CustomerTab.Home) }
+    var trackingActive by remember { mutableStateOf(false) }
 
+    BackHandler(enabled = trackingActive) { }
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.weight(1f)) {
             when (selectedTab) {
@@ -263,7 +271,11 @@ private fun CustomerShell(
                     onSelectVehicle = onSelectVehicle,
                     onOpenVehicles = onOpenVehicles,
                     onLogout = onLogout,
-                    phone = phone
+                    phone = phone,
+                    onTrackingChanged = { active ->
+                        trackingActive = active
+                        if (active) selectedTab = CustomerTab.Home
+                    }
                 )
                 CustomerTab.History -> HistoryScreen(phone = phone)
                 CustomerTab.Profile -> ProfileScreen(
@@ -275,7 +287,7 @@ private fun CustomerShell(
             }
         }
 
-        NavigationBar(containerColor = SurfaceDark) {
+        if (!trackingActive) NavigationBar(containerColor = SurfaceDark) {
             NavigationBarItem(
                 selected = selectedTab == CustomerTab.Home,
                 onClick = { selectedTab = CustomerTab.Home },
@@ -440,7 +452,8 @@ private fun HomeScreen(
     onSelectVehicle: (Int) -> Unit,
     onOpenVehicles: () -> Unit,
     onLogout: () -> Unit,
-    phone: String
+    phone: String,
+    onTrackingChanged: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -450,49 +463,64 @@ private fun HomeScreen(
     var destinationPoint by remember { mutableStateOf<LatLng?>(null) }
     var pickup by remember { mutableStateOf("Konumunuz alınıyor...") }
     var destinationQuery by remember { mutableStateOf("") }
-    var destination by remember { mutableStateOf("Henüz seçilmedi") }
+    var destination by remember { mutableStateOf("Nereye gidilecek?") }
     var suggestions by remember { mutableStateOf<List<PlaceSuggestion>>(emptyList()) }
     var searchingPlaces by remember { mutableStateOf(false) }
     var routeInfo by remember { mutableStateOf<RouteInfo?>(null) }
     var routeLoading by remember { mutableStateOf(false) }
-    var mapExpanded by remember { mutableStateOf(false) }
-    var message by remember { mutableStateOf("Gidilecek yeri yazarak arayın.") }
+    var message by remember { mutableStateOf("Konumunuz hazırlanıyor") }
     var sending by remember { mutableStateOf(false) }
-    var requestCreated by remember { mutableStateOf(false) }
     var activeRequestId by remember { mutableStateOf<String?>(null) }
     var requestStatus by remember { mutableStateOf("IDLE") }
     var socketConnected by remember { mutableStateOf(false) }
     var driverPoint by remember { mutableStateOf<LatLng?>(null) }
     var driverInfo by remember { mutableStateOf<DriverInfo?>(null) }
+    var showDestinationSearch by remember { mutableStateOf(false) }
+
+    val trackingActive = activeRequestId != null && requestStatus !in listOf("COMPLETED", "CANCELLED")
+    LaunchedEffect(trackingActive) { onTrackingChanged(trackingActive) }
+    BackHandler(enabled = trackingActive) { }
 
     val latestRequestId by rememberUpdatedState(activeRequestId)
     val socket = remember {
         IO.socket(API_BASE_URL, IO.Options().apply {
             transports = arrayOf("websocket", "polling")
             reconnection = true
+            reconnectionAttempts = Int.MAX_VALUE
+            reconnectionDelay = 1_000
             timeout = 30_000
         })
     }
 
-    LaunchedEffect(activeRequestId) {
-        val id = activeRequestId ?: return@LaunchedEffect
-        socket.emit("request:join", id)
-        fetchRequestDetails(phone, id).onSuccess { driverInfo = it }
+    suspend fun refreshRequestDetails(requestId: String) {
+        fetchRequestDetails(phone, requestId).onSuccess { details ->
+            requestStatus = details.optString("status", requestStatus)
+            val name = details.optString("driver_name", details.optJSONObject("driver")?.optString("full_name") ?: "")
+            val driverPhone = details.optString("driver_phone", details.optJSONObject("driver")?.optString("phone") ?: "")
+            val rating = details.optDouble("driver_rating", details.optJSONObject("driver")?.optDouble("rating", 5.0) ?: 5.0)
+            if (name.isNotBlank()) driverInfo = DriverInfo(name, driverPhone, rating, selected?.plate ?: "")
+        }
     }
 
     DisposableEffect(socket) {
-        val connectListener = io.socket.emitter.Emitter.Listener { scope.launch { socketConnected = true } }
+        val connectListener = io.socket.emitter.Emitter.Listener {
+            scope.launch {
+                socketConnected = true
+                latestRequestId?.let { socket.emit("request:join", JSONObject().put("requestId", it)) }
+            }
+        }
         val disconnectListener = io.socket.emitter.Emitter.Listener { scope.launch { socketConnected = false } }
         val requestUpdatedListener = io.socket.emitter.Emitter.Listener { args ->
             val data = args.firstOrNull() as? JSONObject ?: return@Listener
             if (data.optString("id") == latestRequestId) {
                 scope.launch {
-                    requestStatus = data.optString("status")
+                    requestStatus = data.optString("status", requestStatus)
                     message = requestStatusText(requestStatus)
-                    latestRequestId?.let { id -> fetchRequestDetails(phone, id).onSuccess { driverInfo = it } }
+                    latestRequestId?.let { refreshRequestDetails(it) }
                     if (requestStatus in listOf("COMPLETED", "CANCELLED")) {
-                        requestCreated = false
+                        activeRequestId = null
                         driverPoint = null
+                        driverInfo = null
                     }
                 }
             }
@@ -520,23 +548,21 @@ private fun HomeScreen(
     }
 
     val cameraPositionState = rememberCameraPositionState {
-        position = CameraPosition.fromLatLngZoom(LatLng(41.0082, 28.9784), 10f)
+        position = CameraPosition.fromLatLngZoom(LatLng(41.0082, 28.9784), 11f)
     }
 
     fun applyPickup(point: LatLng) {
         pickupPoint = point
         pickup = coordinateLabel("Mevcut konum", point)
         scope.launch {
-            reverseGeocode(point)
-                .onSuccess { pickup = it }
-                .onFailure { message = "Adres bilgisi alınamadı." }
+            reverseGeocode(point).onSuccess { pickup = it }.onFailure { message = "Adres bilgisi alınamadı." }
         }
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
         if (permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true || permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true) {
             fetchCurrentLocation(context) { point, error -> if (point != null) applyPickup(point) else message = error ?: "Konum alınamadı." }
-        } else message = "Konum izni verilmedi. Alım noktasını haritadan seçebilirsiniz."
+        } else message = "Konum izni verilmedi."
     }
 
     LaunchedEffect(Unit) {
@@ -544,16 +570,27 @@ private fun HomeScreen(
         val coarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
         if (fine || coarse) fetchCurrentLocation(context) { point, error -> if (point != null) applyPickup(point) else message = error ?: "Konum alınamadı." }
         else permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+
+        restoreActiveRequest(phone).onSuccess { item ->
+            if (item != null) {
+                activeRequestId = item.optString("id")
+                requestStatus = item.optString("status", "SEARCHING")
+                pickup = item.optString("pickup_address", pickup)
+                destination = item.optString("destination_address", destination)
+                val pLat = item.optDouble("pickup_lat", Double.NaN); val pLng = item.optDouble("pickup_lng", Double.NaN)
+                val dLat = item.optDouble("destination_lat", Double.NaN); val dLng = item.optDouble("destination_lng", Double.NaN)
+                if (!pLat.isNaN() && !pLng.isNaN()) pickupPoint = LatLng(pLat, pLng)
+                if (!dLat.isNaN() && !dLng.isNaN()) destinationPoint = LatLng(dLat, dLng)
+                activeRequestId?.let { refreshRequestDetails(it) }
+            }
+        }
     }
 
     LaunchedEffect(pickupPoint, destinationPoint) {
         val from = pickupPoint; val to = destinationPoint
         if (from != null && to != null) {
             routeLoading = true
-            fetchRoute(from, to).onSuccess {
-                routeInfo = it
-                message = "Rota hazır: ${"%.1f".format(it.distanceKm)} km, yaklaşık ${it.durationMinutes} dakika."
-            }.onFailure { message = "Rota alınamadı: ${it.message}" }
+            fetchRoute(from, to).onSuccess { routeInfo = it }.onFailure { message = "Rota alınamadı: ${it.message}" }
             routeLoading = false
         }
     }
@@ -561,216 +598,351 @@ private fun HomeScreen(
     val distanceKm = routeInfo?.distanceKm ?: 0.0
     val price = if (distanceKm > 0) (250 + distanceKm * 30).roundToInt() else 0
     val canCall = selected != null && pickupPoint != null && destinationPoint != null && routeInfo != null && !sending
+    val assigned = requestStatus != "SEARCHING" && requestStatus != "IDLE"
 
-    if (requestCreated && pickupPoint != null && destinationPoint != null && activeRequestId != null) {
-        PremiumTrackingScreen(
-            pickup = pickupPoint!!,
-            destination = destinationPoint!!,
-            driverPoint = driverPoint,
-            routePoints = routeInfo?.points.orEmpty(),
-            status = requestStatus,
-            driverInfo = driverInfo,
-            vehicle = selected,
-            onCall = {
-                val number = driverInfo?.phone.orEmpty()
-                if (number.isNotBlank()) context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$number")))
-            },
-            onCancel = {
-                val id = activeRequestId
-                if (id != null) scope.launch {
-                    cancelRequest(phone, id).onSuccess {
-                        requestCreated = false; requestStatus = "CANCELLED"; driverPoint = null
-                        message = "Talep iptal edildi."
-                    }.onFailure { message = it.message ?: "İptal edilemedi" }
-                }
+    Box(Modifier.fillMaxSize().background(Background)) {
+        GoogleMap(modifier = Modifier.fillMaxSize(), cameraPositionState = cameraPositionState) {
+            pickupPoint?.let { Marker(state = rememberMarkerState(position = it), title = "Alım noktası") }
+            destinationPoint?.let { Marker(state = rememberMarkerState(position = it), title = "Varış noktası") }
+            driverPoint?.let { Marker(state = rememberMarkerState(position = it), title = "Valeniz") }
+            routeInfo?.points?.takeIf { it.size > 1 }?.let { Polyline(points = it, color = Orange, width = 12f) }
+        }
+
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 18.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(Modifier.size(54.dp).background(Color(0xEE101419), CircleShape), contentAlignment = Alignment.Center) {
+                Text("V", color = Orange, fontSize = 28.sp, fontWeight = FontWeight.Black)
             }
-        )
-        return
-    }
-
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Spacer(Modifier.height(8.dp))
-        Text("Vale çağır", color = Color.White, fontSize = 27.sp, fontWeight = FontWeight.Bold)
-        Text("Konumunuz otomatik alınır; yalnızca gideceğiniz yeri yazın.", color = Muted, fontSize = 13.sp)
-
-        Text("Araç", color = Color.White, fontWeight = FontWeight.SemiBold)
-        if (selected == null) EmptyVehicleCard(onOpenVehicles) else VehicleCard(selected, true, { onSelectVehicle(selected.id) }, onOpenVehicles, compact = true)
-
-        Card(colors = CardDefaults.cardColors(containerColor = SurfaceDark), shape = RoundedCornerShape(20.dp)) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("📍 Alınacak yer", color = Color.White, fontWeight = FontWeight.SemiBold)
-                Text(pickup, color = Muted, fontSize = 13.sp)
-                Button(onClick = {
-                    val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-                    if (fine) fetchCurrentLocation(context) { p, e -> if (p != null) applyPickup(p) else message = e ?: "Konum alınamadı" }
-                    else permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
-                }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = SurfaceSoft), shape = RoundedCornerShape(14.dp)) {
-                    Text("Konumumu yenile", color = Color.White)
+            Box(Modifier.background(Color(0xEE14191F), RoundedCornerShape(28.dp)).padding(horizontal = 18.dp, vertical = 12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(9.dp).background(if (socketConnected) Success else Orange, CircleShape))
+                    Spacer(Modifier.width(9.dp))
+                    Text(if (trackingActive) "Canlı takip" else "Hazır", color = Color.White, fontWeight = FontWeight.Bold)
                 }
             }
         }
 
-        Card(colors = CardDefaults.cardColors(containerColor = SurfaceDark), shape = RoundedCornerShape(20.dp)) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("🏁 Gidilecek yer", color = Color.White, fontWeight = FontWeight.SemiBold)
-                OutlinedTextField(
-                    value = destinationQuery,
-                    onValueChange = { destinationQuery = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Adres veya yer adı") },
-                    placeholder = { Text("Örn. Marmara Park AVM") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    colors = fieldColors()
-                )
-                Button(onClick = {
-                    if (destinationQuery.length < 3) { message = "Arama için en az 3 harf yazın."; return@Button }
-                    searchingPlaces = true
-                    scope.launch {
-                        searchPlaces(destinationQuery, pickupPoint).onSuccess { suggestions = it; if (it.isEmpty()) message = "Adres bulunamadı." }
-                            .onFailure { message = "Adres araması başarısız: ${it.message}" }
-                        searchingPlaces = false
-                    }
-                }, modifier = Modifier.fillMaxWidth(), enabled = !searchingPlaces, colors = ButtonDefaults.buttonColors(containerColor = Orange), shape = RoundedCornerShape(14.dp)) {
-                    if (searchingPlaces) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text("Adresi ara", fontWeight = FontWeight.Bold)
-                }
-                suggestions.take(5).forEach { place ->
-                    Card(modifier = Modifier.fillMaxWidth().clickable {
-                        destinationPoint = place.point
-                        destination = place.displayName
-                        destinationQuery = place.displayName
-                        suggestions = emptyList()
-                        routeInfo = null
-                        requestCreated = false
-                    }, colors = CardDefaults.cardColors(containerColor = SurfaceSoft), shape = RoundedCornerShape(12.dp)) {
-                        Text(place.displayName, color = Color.White, fontSize = 13.sp, modifier = Modifier.padding(12.dp))
-                    }
-                }
-                if (destinationPoint != null) Text("Seçilen: $destination", color = Success, fontSize = 12.sp)
-                Text(if (mapExpanded) "Haritayı gizle" else "Haritada kontrol et / düzelt", color = Orange, fontSize = 13.sp,
-                    modifier = Modifier.align(Alignment.End).clickable { mapExpanded = !mapExpanded })
-            }
-        }
-
-        AnimatedVisibility(mapExpanded || requestCreated) {
-            Card(colors = CardDefaults.cardColors(containerColor = SurfaceDark), shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(if (requestCreated) "Canlı vale takibi" else "Rota önizleme", color = Color.White, fontWeight = FontWeight.SemiBold)
-                    Box(Modifier.fillMaxWidth().height(310.dp).background(SurfaceSoft, RoundedCornerShape(16.dp))) {
-                        GoogleMap(modifier = Modifier.fillMaxSize(), cameraPositionState = cameraPositionState, onMapClick = { point ->
-                            if (!requestCreated) { destinationPoint = point; destination = coordinateLabel("Haritada seçilen yer", point); destinationQuery = destination; routeInfo = null }
-                        }) {
-                            pickupPoint?.let { Marker(state = rememberMarkerState(position = it), title = "Alım") }
-                            destinationPoint?.let { Marker(state = rememberMarkerState(position = it), title = "Varış") }
-                            driverPoint?.let { Marker(state = rememberMarkerState(position = it), title = "Valeniz") }
-                            routeInfo?.points?.takeIf { it.size > 1 }?.let { Polyline(points = it, color = Orange, width = 12f) }
+        if (!trackingActive) {
+            Card(
+                modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xF514191F)),
+                shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp, bottomStart = 24.dp, bottomEnd = 24.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Border)
+            ) {
+                Column(Modifier.padding(18.dp).animateContentSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Box(Modifier.align(Alignment.CenterHorizontally).width(74.dp).height(5.dp).background(Border, CircleShape))
+                    Card(colors = CardDefaults.cardColors(containerColor = SurfaceSoft), shape = RoundedCornerShape(18.dp)) {
+                        Column(Modifier.fillMaxWidth()) {
+                            Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.size(10.dp).background(Orange, CircleShape))
+                                Spacer(Modifier.width(12.dp))
+                                Text(pickup, color = Color.White, modifier = Modifier.weight(1f), maxLines = 2)
+                            }
+                            Box(Modifier.fillMaxWidth().height(1.dp).background(Border))
+                            Row(Modifier.fillMaxWidth().clickable { showDestinationSearch = true }.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("■", color = Color(0xFFFF5364), fontSize = 12.sp)
+                                Spacer(Modifier.width(12.dp))
+                                Text(if (destinationPoint == null) "Nereye gidilecek?" else destination, color = if (destinationPoint == null) Muted else Color.White, fontSize = 18.sp, modifier = Modifier.weight(1f))
+                                Text("＋", color = Muted, fontSize = 28.sp)
+                            }
                         }
-                        if (routeLoading) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                    }
+
+                    AnimatedVisibility(showDestinationSearch) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(destinationQuery, { destinationQuery = it }, Modifier.fillMaxWidth(), placeholder = { Text("Adres veya yer adı") }, singleLine = true, colors = fieldColors(), shape = RoundedCornerShape(16.dp))
+                            Button(onClick = {
+                                if (destinationQuery.length < 3) return@Button
+                                searchingPlaces = true
+                                scope.launch {
+                                    searchPlaces(destinationQuery, pickupPoint).onSuccess { suggestions = it }.onFailure { message = it.message ?: "Adres bulunamadı" }
+                                    searchingPlaces = false
+                                }
+                            }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Orange)) {
+                                if (searchingPlaces) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text("Adresi ara", fontWeight = FontWeight.Bold)
+                            }
+                            suggestions.take(4).forEach { place ->
+                                Row(Modifier.fillMaxWidth().background(SurfaceSoft, RoundedCornerShape(14.dp)).clickable {
+                                    destinationPoint = place.point; destination = place.displayName; destinationQuery = place.displayName; suggestions = emptyList(); showDestinationSearch = false
+                                }.padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("📍"); Spacer(Modifier.width(10.dp)); Text(place.displayName, color = Color.White, fontSize = 13.sp)
+                                }
+                            }
+                        }
+                    }
+
+                    Text("Sık kullanılanlar", color = Color.White, fontWeight = FontWeight.Bold)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        QuickPlaceCard("⌂", "Ev", Modifier.weight(1f))
+                        QuickPlaceCard("▣", "İş", Modifier.weight(1f))
+                    }
+
+                    if (selected != null) {
+                        Card(colors = CardDefaults.cardColors(containerColor = SurfaceSoft), shape = RoundedCornerShape(18.dp), modifier = Modifier.clickable(onClick = onOpenVehicles)) {
+                            Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.size(46.dp).background(Color(0xFF2C2519), CircleShape), contentAlignment = Alignment.Center) { Text("🚘") }
+                                Spacer(Modifier.width(12.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text("${selected.brand} ${selected.model}", color = Color.White, fontWeight = FontWeight.Bold)
+                                    Text(selected.plate, color = Muted, fontSize = 12.sp)
+                                }
+                                Text("Değiştir", color = Orange, fontSize = 12.sp)
+                            }
+                        }
+                    }
+
+                    Button(
+                        onClick = {
+                            val p = pickupPoint ?: return@Button
+                            val d = destinationPoint ?: return@Button
+                            val vehicle = selected ?: return@Button
+                            sending = true
+                            scope.launch {
+                                createRealValetRequest(phone, vehicle, pickup, p, destination, d, distanceKm, price.toDouble()) { message = it }
+                                    .onSuccess { id -> activeRequestId = id; requestStatus = "SEARCHING"; message = "Size en yakın uygun valeler aranıyor."; socket.emit("request:join", JSONObject().put("requestId", id)) }
+                                    .onFailure { message = "Talep oluşturulamadı: ${it.message}" }
+                                sending = false
+                            }
+                        },
+                        enabled = canCall,
+                        modifier = Modifier.fillMaxWidth().height(66.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Orange, disabledContainerColor = Color(0xFF5A4A31)),
+                        shape = RoundedCornerShape(22.dp)
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(if (sending) "Talep gönderiliyor..." else "Vale çağır", color = Color.Black, fontWeight = FontWeight.Black, fontSize = 18.sp)
+                            if (price > 0) Text("Tahmini ücret ₺$price • ${"%.1f".format(distanceKm)} km", color = Color.Black, fontSize = 12.sp)
+                        }
                     }
                 }
             }
+        } else {
+            TrackingBottomSheet(
+                status = requestStatus,
+                assigned = assigned,
+                driverInfo = driverInfo,
+                pickup = pickup,
+                destination = destination,
+                price = price,
+                distanceKm = distanceKm,
+                routeMinutes = routeInfo?.durationMinutes ?: 0,
+                onCall = {
+                    val number = driverInfo?.phone.orEmpty()
+                    if (number.isNotBlank()) context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$number")))
+                },
+                onMessage = {
+                    val number = driverInfo?.phone.orEmpty()
+                    if (number.isNotBlank()) context.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:$number")))
+                },
+                onCancel = {
+                    val id = activeRequestId
+                    if (id != null) {
+                        scope.launch {
+                            cancelCustomerRequest(phone, id).onSuccess { requestStatus = "CANCELLED"; activeRequestId = null; driverInfo = null; driverPoint = null }
+                                .onFailure { message = it.message ?: "Talep iptal edilemedi" }
+                        }
+                    }
+                }
+            )
         }
 
-        Card(colors = CardDefaults.cardColors(containerColor = SurfaceDark), shape = RoundedCornerShape(20.dp)) {
-            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                Text("Yolculuk özeti", color = Color.White, fontWeight = FontWeight.SemiBold)
-                Text("📍 $pickup", color = Color.White, fontSize = 13.sp)
-                Text("🏁 $destination", color = Color.White, fontSize = 13.sp)
-                if (routeInfo != null) Text("🛣️ ${"%.1f".format(distanceKm)} km • ⏱️ ${routeInfo!!.durationMinutes} dk", color = Muted, fontSize = 13.sp)
-                Text("Tahmini ücret: ${if (price > 0) "₺$price" else "Rota seçilmedi"}", color = Orange, fontSize = 19.sp, fontWeight = FontWeight.Bold)
-                Text(message, color = if (requestCreated) Success else Muted, fontSize = 12.sp)
-                if (activeRequestId != null) Text("Canlı bağlantı: ${if (socketConnected) "Aktif" else "Bağlanıyor"} • ${requestStatusLabel(requestStatus)}", color = Muted, fontSize = 11.sp)
-            }
-        }
+        if (routeLoading) Box(Modifier.fillMaxSize().background(Color(0x44000000)), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Orange) }
+    }
+}
 
-        PrimaryButton(if (sending) "Talep gönderiliyor..." else if (requestCreated) "Talep oluşturuldu" else "Vale Çağır • ₺$price", canCall && !requestCreated) {
-            val p = pickupPoint ?: return@PrimaryButton
-            val d = destinationPoint ?: return@PrimaryButton
-            val vehicle = selected ?: return@PrimaryButton
-            sending = true
-            scope.launch {
-                createRealValetRequest( phone, vehicle, pickup, p, destination, d, distanceKm, price.toDouble() ) { stage -> message = stage }
-                    .onSuccess { id -> activeRequestId = id; requestCreated = true; requestStatus = "SEARCHING"; mapExpanded = true; message = "Talebiniz oluşturuldu, uygun vale aranıyor." }
-                    .onFailure { message = "Talep oluşturulamadı: ${it.message}" }
-                sending = false
+@Composable
+private fun QuickPlaceCard(icon: String, title: String, modifier: Modifier = Modifier) {
+    Row(modifier.background(SurfaceSoft, RoundedCornerShape(16.dp)).padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(38.dp).background(Color(0xFF2C2519), RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) { Text(icon, color = Orange, fontSize = 20.sp) }
+        Spacer(Modifier.width(10.dp)); Text(title, color = Color.White, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun androidx.compose.foundation.layout.BoxScope.TrackingBottomSheet(
+    status: String,
+    assigned: Boolean,
+    driverInfo: DriverInfo?,
+    pickup: String,
+    destination: String,
+    price: Int,
+    distanceKm: Double,
+    routeMinutes: Int,
+    onCall: () -> Unit,
+    onMessage: () -> Unit,
+    onCancel: () -> Unit
+) {
+    val pulse by animateFloatAsState(if (assigned) 1f else 0.86f, label = "searchPulse")
+    var expanded by remember { mutableStateOf(true) }
+    var dragDistance by remember { mutableStateOf(0f) }
+    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+    val panelHeight by animateDpAsState(
+        targetValue = if (expanded) screenHeight * 0.72f else 190.dp,
+        label = "trackingPanelHeight"
+    )
+
+    Card(
+        modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .fillMaxWidth()
+            .height(panelHeight)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xF714191F)),
+        shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp, bottomStart = 24.dp, bottomEnd = 24.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Border)
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .pointerInput(expanded) {
+                        detectVerticalDragGestures(
+                            onVerticalDrag = { _, amount -> dragDistance += amount },
+                            onDragEnd = {
+                                if (dragDistance > 35f) expanded = false
+                                if (dragDistance < -35f) expanded = true
+                                dragDistance = 0f
+                            },
+                            onDragCancel = { dragDistance = 0f }
+                        )
+                    }
+                    .clickable { expanded = !expanded }
+                    .padding(top = 10.dp, bottom = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(Modifier.width(74.dp).height(5.dp).background(Border, CircleShape))
+                Text(
+                    if (expanded) "Aşağı kaydırarak haritayı büyüt" else "Yukarı kaydırarak ayrıntıları aç",
+                    color = Muted,
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(top = 5.dp)
+                )
+            }
+
+            if (!expanded) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        Modifier.size(52.dp).background(Color(0xFF2D210C), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(if (assigned) "👤" else "V", color = Orange, fontSize = 24.sp, fontWeight = FontWeight.Black)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (assigned) requestStatusText(status) else "Valeniz aranıyor",
+                            color = Color.White,
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            if (assigned) (driverInfo?.name ?: "Atanan vale") else "Yakındaki uygun valeler aranıyor",
+                            color = Muted,
+                            fontSize = 12.sp
+                        )
+                    }
+                    if (assigned) {
+                        Text(
+                            if (routeMinutes > 0) "$routeMinutes dk" else "Canlı",
+                            color = Orange,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Black
+                        )
+                    }
+                }
+            } else {
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 18.dp, vertical = 4.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Text(if (assigned) requestStatusText(status) else "Valeniz aranıyor", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Black)
+                    Text(if (assigned) "Valeniz konumunuza doğru geliyor." else "Size en yakın uygun valeler aranıyor. Lütfen bekleyin.", color = Muted)
+
+                    if (!assigned) {
+                        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Box(Modifier.scale(pulse).size(88.dp).background(Color(0x332D210C), CircleShape), contentAlignment = Alignment.Center) {
+                                Box(Modifier.size(62.dp).background(Color(0xFF2D210C), CircleShape), contentAlignment = Alignment.Center) { Text("V", color = Orange, fontSize = 34.sp, fontWeight = FontWeight.Black) }
+                            }
+                            Spacer(Modifier.height(8.dp)); Text("Yakındaki valeler aranıyor", color = Color.White, fontWeight = FontWeight.Bold)
+                            Text("Konum canlı güncelleniyor", color = Muted, fontSize = 13.sp)
+                        }
+                    } else {
+                        Card(colors = CardDefaults.cardColors(containerColor = SurfaceSoft), shape = RoundedCornerShape(20.dp)) {
+                            Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.size(64.dp).background(Color(0xFF2C2519), CircleShape), contentAlignment = Alignment.Center) { Text("👤", fontSize = 30.sp) }
+                                Spacer(Modifier.width(12.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(driverInfo?.name ?: "Atanan vale", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                                    Text("★ ${"%.1f".format(driverInfo?.rating ?: 5.0)}  •  ${driverInfo?.plate.orEmpty()}", color = Muted, fontSize = 13.sp)
+                                }
+                                CircleAction("☎", "Ara", Orange, onCall)
+                                Spacer(Modifier.width(9.dp))
+                                CircleAction("•••", "Mesaj", SurfaceDark, onMessage)
+                            }
+                        }
+                        StatusProgress(status)
+                    }
+
+                    Card(colors = CardDefaults.cardColors(containerColor = SurfaceSoft), shape = RoundedCornerShape(20.dp)) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text("●  $pickup", color = Color.White, fontSize = 13.sp)
+                            Box(Modifier.padding(start = 5.dp).width(1.dp).height(18.dp).background(Border))
+                            Text("■  $destination", color = Color.White, fontSize = 13.sp)
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Metric("Tahmini ücret", if (price > 0) "₺$price" else "—")
+                        Metric("Rota", if (distanceKm > 0) "${"%.1f".format(distanceKm)} km" else "—")
+                        Metric("Tahmini varış", if (routeMinutes > 0) "$routeMinutes dk" else "—")
+                    }
+                    Button(onClick = onCancel, modifier = Modifier.fillMaxWidth().height(58.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4A2227)), shape = RoundedCornerShape(18.dp)) {
+                        Text("Vale talebini iptal et", color = Danger, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
             }
         }
-        Spacer(Modifier.height(90.dp))
     }
 }
 
 
 @Composable
-private fun PremiumTrackingScreen(
-    pickup: LatLng,
-    destination: LatLng,
-    driverPoint: LatLng?,
-    routePoints: List<LatLng>,
-    status: String,
-    driverInfo: DriverInfo?,
-    vehicle: Vehicle?,
-    onCall: () -> Unit,
-    onCancel: () -> Unit
-) {
-    val camera = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(driverPoint ?: pickup, 14f) }
-    var mapReady by remember { mutableStateOf(false) }
-    val animatedLat by animateFloatAsState((driverPoint?.latitude ?: pickup.latitude).toFloat(), label = "driverLat")
-    val animatedLng by animateFloatAsState((driverPoint?.longitude ?: pickup.longitude).toFloat(), label = "driverLng")
-    val animatedDriver = LatLng(animatedLat.toDouble(), animatedLng.toDouble())
-    val remainingKm = directDistanceKm(animatedDriver, if (status in listOf("IN_TRANSIT","DELIVERED")) destination else pickup)
-    val eta = maxOf(1, (remainingKm / 0.45).roundToInt())
-
-    LaunchedEffect(mapReady, animatedDriver, destination) {
-        if (!mapReady) return@LaunchedEffect
-        runCatching {
-            val bounds = com.google.android.gms.maps.model.LatLngBounds.builder()
-                .include(animatedDriver).include(pickup).include(destination).build()
-            camera.animate(CameraUpdateFactory.newLatLngBounds(bounds, 150))
-        }
+private fun CircleAction(icon: String, label: String, color: Color, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.size(48.dp).background(color, CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) { Text(icon, color = Color.White, fontWeight = FontWeight.Bold) }
+        Text(label, color = Color.White, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp))
     }
+}
 
-    Box(Modifier.fillMaxSize().background(Background)) {
-        GoogleMap(
-            modifier = Modifier.fillMaxSize(),
-            cameraPositionState = camera,
-            properties = MapProperties(
-                isTrafficEnabled = true,
-                mapStyleOptions = MapStyleOptions(DARK_MAP_JSON)
-            ),
-            uiSettings = MapUiSettings(zoomControlsEnabled = false, compassEnabled = true, myLocationButtonEnabled = false),
-            onMapLoaded = { mapReady = true }
-        ) {
-            Marker(state = rememberMarkerState(position = pickup), title = "Siz")
-            Marker(state = rememberMarkerState(position = destination), title = "Teslim noktası")
-            Marker(state = rememberMarkerState(position = animatedDriver), title = "Valeniz")
-            routePoints.takeIf { it.size > 1 }?.let { Polyline(points = it, color = Color(0xFF2F80ED), width = 14f) }
-        }
+@Composable
+private fun Metric(label: String, value: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) { Text(label, color = Muted, fontSize = 11.sp); Text(value, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 17.sp) }
+}
 
-        Card(
-            modifier = Modifier.align(Alignment.TopCenter).padding(18.dp).fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = Color(0xE6151A21)),
-            shape = RoundedCornerShape(22.dp)
-        ) {
-            Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column { Text(requestStatusLabel(status), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp); Text("Valeniz canlı olarak takip ediliyor", color = Muted, fontSize = 12.sp) }
-                Column(horizontalAlignment = Alignment.End) { Text("$eta dk", color = Orange, fontWeight = FontWeight.Black, fontSize = 24.sp); Text("%.1f km".format(remainingKm), color = Muted, fontSize = 12.sp) }
-            }
-        }
-
-        Card(
-            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(14.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xF510141A)),
-            shape = RoundedCornerShape(28.dp)
-        ) {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Column { Text(driverInfo?.name ?: "Valeniz atanıyor", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp); Text("★ ${"%.1f".format(driverInfo?.rating ?: 5.0)}", color = Orange) }
-                    Column(horizontalAlignment = Alignment.End) { Text(vehicle?.let { "${it.brand} ${it.model}" } ?: "Vale aracı", color = Color.White, fontWeight = FontWeight.SemiBold); Text(vehicle?.plate ?: "", color = Orange, fontWeight = FontWeight.Bold) }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(onClick = onCall, enabled = !driverInfo?.phone.isNullOrBlank(), modifier = Modifier.weight(1f), shape = RoundedCornerShape(16.dp)) { Text("📞 Ara") }
-                    Button(onClick = onCancel, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A2024)), shape = RoundedCornerShape(16.dp)) { Text("İptal", color = Danger) }
-                }
+@Composable
+private fun StatusProgress(status: String) {
+    val steps = listOf("DRIVER_EN_ROUTE", "ARRIVED", "VEHICLE_RECEIVED", "IN_TRANSIT")
+    val index = when (status) {
+        "ASSIGNED", "DRIVER_EN_ROUTE" -> 0
+        "ARRIVED" -> 1
+        "VEHICLE_RECEIVED" -> 2
+        "IN_TRANSIT", "DELIVERED" -> 3
+        else -> 0
+    }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        listOf("Yola çıktı", "Yaklaşıyor", "Konumda", "Aracınızla").forEachIndexed { i, label ->
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(Modifier.size(30.dp).background(if (i <= index) Orange else SurfaceSoft, CircleShape), contentAlignment = Alignment.Center) { Text(if (i <= index) "✓" else "•", color = if (i <= index) Color.Black else Muted) }
+                Text(label, color = if (i <= index) Orange else Muted, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp))
             }
         }
     }
@@ -897,7 +1069,7 @@ private fun SecurityCard() {
 
 @Composable
 private fun PrimaryButton(text: String, enabled: Boolean, onClick: () -> Unit) {
-    Button(onClick, Modifier.fillMaxWidth().height(58.dp), enabled = enabled, shape = RoundedCornerShape(18.dp), colors = ButtonDefaults.buttonColors(containerColor = Orange, contentColor = Color.White, disabledContainerColor = Color(0xFF5B4630), disabledContentColor = Color(0xFFB7A793))) { Text(text, fontSize = 16.sp, fontWeight = FontWeight.Bold) }
+    PremiumPrimaryButton(text = text, enabled = enabled, onClick = onClick)
 }
 
 @Composable
@@ -953,8 +1125,6 @@ private suspend fun fetchRoute(from: LatLng, to: LatLng): Result<RouteInfo> = wi
         RouteInfo(o.getDouble("distanceKm"), o.getInt("durationMinutes"), points)
     }
 }
-
-private const val DARK_MAP_JSON = """[{"elementType":"geometry","stylers":[{"color":"#101419"}]},{"elementType":"labels.text.fill","stylers":[{"color":"#8f9aa8"}]},{"elementType":"labels.text.stroke","stylers":[{"color":"#101419"}]},{"featureType":"road","elementType":"geometry","stylers":[{"color":"#252b33"}]},{"featureType":"road.highway","elementType":"geometry","stylers":[{"color":"#343b45"}]},{"featureType":"water","elementType":"geometry","stylers":[{"color":"#07111d"}]},{"featureType":"poi","elementType":"geometry","stylers":[{"color":"#171c22"}]}]"""
 
 private const val API_BASE_URL = "https://valekapimda-api.onrender.com"
 
@@ -1040,35 +1210,6 @@ private suspend fun createRealValetRequest(
     }
 }
 
-
-private suspend fun fetchRequestDetails(phone: String, requestId: String): Result<DriverInfo> = withContext(Dispatchers.IO) {
-    runCatching {
-        val token = demoCustomerLogin(phone).getString("token")
-        val o = getJsonObject("$API_BASE_URL/requests/$requestId", token)
-        DriverInfo(o.optString("driver_name", "Valeniz atanıyor"), o.optString("driver_phone", ""), o.optDouble("driver_rating", 5.0))
-    }
-}
-
-private suspend fun cancelRequest(phone: String, requestId: String): Result<Unit> = withContext(Dispatchers.IO) {
-    runCatching {
-        val token = demoCustomerLogin(phone).getString("token")
-        requestJsonMethod("PATCH", "$API_BASE_URL/requests/$requestId/cancel", token)
-        Unit
-    }
-}
-
-private fun requestJsonMethod(method: String, url: String, token: String): JSONObject {
-    val c = URL(url).openConnection() as HttpURLConnection
-    try {
-        c.requestMethod = method; c.connectTimeout = 10_000; c.readTimeout = 15_000
-        c.setRequestProperty("Authorization", "Bearer $token"); c.setRequestProperty("Accept", "application/json")
-        val code = c.responseCode
-        val text = (if (code in 200..299) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
-        if (code !in 200..299) error("Sunucu $code: $text")
-        return if (text.isBlank()) JSONObject() else JSONObject(text)
-    } finally { c.disconnect() }
-}
-
 private suspend fun fetchCustomerHistory(phone: String): Result<List<HistoryItem>> = withContext(Dispatchers.IO) {
     runCatching {
         val login = demoCustomerLogin(phone)
@@ -1103,6 +1244,51 @@ private suspend fun fetchCustomerProfile(phone: String): Result<CustomerProfile>
             phone = user.optString("phone", "+90${phone.filter(Char::isDigit).takeLast(10)}")
         )
     }
+}
+
+
+private suspend fun restoreActiveRequest(phone: String): Result<JSONObject?> = withContext(Dispatchers.IO) {
+    runCatching {
+        val login = demoCustomerLogin(phone)
+        val token = login.optString("token")
+        val array = getJsonArray("$API_BASE_URL/requests", token)
+        (0 until array.length()).map { array.getJSONObject(it) }.firstOrNull {
+            it.optString("status") !in listOf("COMPLETED", "CANCELLED")
+        }
+    }
+}
+
+private suspend fun fetchRequestDetails(phone: String, requestId: String): Result<JSONObject> = withContext(Dispatchers.IO) {
+    runCatching {
+        val token = demoCustomerLogin(phone).optString("token")
+        getJsonObject("$API_BASE_URL/requests/$requestId", token)
+    }
+}
+
+private suspend fun cancelCustomerRequest(phone: String, requestId: String): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+        val token = demoCustomerLogin(phone).optString("token")
+        patchJson("$API_BASE_URL/requests/$requestId/cancel", JSONObject(), token)
+        Unit
+    }
+}
+
+private fun patchJson(url: String, body: JSONObject, token: String? = null): JSONObject {
+    val connection = URL(url).openConnection() as HttpURLConnection
+    try {
+        connection.requestMethod = "PATCH"
+        connection.connectTimeout = 8_000
+        connection.readTimeout = 8_000
+        connection.doOutput = true
+        connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+        connection.setRequestProperty("Accept", "application/json")
+        if (!token.isNullOrBlank()) connection.setRequestProperty("Authorization", "Bearer $token")
+        connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+        val code = connection.responseCode
+        val text = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
+        if (code !in 200..299) error("Sunucu hatası $code: $text")
+        return if (text.isBlank()) JSONObject() else JSONObject(text)
+    } finally { connection.disconnect() }
 }
 
 private fun demoCustomerLogin(phone: String): JSONObject {
