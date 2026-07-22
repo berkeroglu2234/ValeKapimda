@@ -125,6 +125,9 @@ fun DriverApp() {
     }
 
     fun addOrUpdateRequest(json: JSONObject) {
+
+        Log.d("VALE_DEBUG", "GELEN REQUEST: $json")
+
         val item = jsonToDriverRequest(json)
         val index = requests.indexOfFirst { it.id == item.id }
 
@@ -734,8 +737,8 @@ private fun jsonToDriverRequest(json: JSONObject): DriverRequest {
         id = json.optString("id"),
         pickupAddress = json.optString("pickupAddress"),
         destinationAddress = json.optString("destinationAddress"),
-        distanceKm = json.optDouble("distanceKm", 0.0),
-        quotedPrice = json.optDouble("quotedPrice", 0.0),
+        distanceKm = json.optString("distance_km", "0").toDoubleOrNull() ?: 0.0,
+        quotedPrice = json.optString("quoted_price", "0").toDoubleOrNull() ?: 0.0,
         status = json.optString("status"),
         customerPhone = json.optString("customerPhone")
     )
