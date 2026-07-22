@@ -153,10 +153,28 @@ app.get('/places/search', async (req, res) => {
       ? `&viewbox=${Number(req.query.lng)-0.6},${Number(req.query.lat)+0.4},${Number(req.query.lng)+0.6},${Number(req.query.lat)-0.4}&bounded=0`
       : '';
     const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=7&countrycodes=tr&accept-language=tr&q=${encodeURIComponent(q)}${viewbox}`;
-    const response = await fetch(url, { headers: { 'User-Agent': 'ValeKapimda/1.0 (support@valekapimda.app)' } });
-    if (!response.ok) throw new Error('Adres servisi yanıt vermedi');
-    const data: any[] = await response.json();
-    res.json(data.map(x => ({ displayName: x.display_name, lat: Number(x.lat), lng: Number(x.lon) })));
+    const response = await fetch(url, {
+  headers: {
+    "User-Agent": "ValeKapimda-App"
+  }
+});
+
+const text = await response.text();
+
+if (!response.ok) {
+  console.log("Nominatim hata:", response.status, text);
+  throw new Error(`Adres servisi hata verdi: ${response.status}`);
+}
+
+const data:any[] = JSON.parse(text);
+
+res.json(
+  data.map(x => ({
+    displayName: x.display_name,
+    lat: Number(x.lat),
+    lng: Number(x.lon)
+  }))
+);
   } catch (e: any) { res.status(502).json({ message: e.message }); }
 });
 
