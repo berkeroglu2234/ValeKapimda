@@ -159,12 +159,18 @@ app.post('/requests', auth, role('CUSTOMER'), async (req: AuthedRequest, res) =>
 res.status(201).json(r.rows[0]);
 
 if (customer.rows[0]?.phone) {
+  console.log("SMS gönderiliyor:", customer.rows[0].phone);
+
   sendNetgsmSms(
     customer.rows[0].phone,
     "Vale talebiniz alinmistir. En kisa surede size vale yonlendirilecektir."
-  ).catch((error) => {
-    console.error("Talep SMS'i gönderilemedi:", error);
-  });
+  )
+    .then((result) => {
+      console.log("NetGSM cevabı:", result);
+    })
+    .catch((error) => {
+      console.error("Talep SMS'i gönderilemedi:", error);
+    });
 }
   } catch (e: any) { res.status(500).json({ message: e.message }); }
 });
@@ -242,18 +248,61 @@ res.json(
 
 app.get('/places/reverse', async (req, res) => {
   try {
-    const lat = Number(req.query.lat), lng = Number(req.query.lng);
-    const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&accept-language=tr&lat=${lat}&lon=${lng}`, { headers: { 'User-Agent': 'ValeKapimda/1.0 (support@valekapimda.app)' } });
-    if (!response.ok) {
-  const text = await response.text();
-  console.log("Nominatim reverse hata:", response.status, text);
-  throw new Error(`Adres servisi hata verdi: ${response.status}`);
-}
-    const data: any = await response.json();
-    res.json({ displayName: data.display_name || `${lat}, ${lng}` });
-  } catch (e: any) { res.status(502).json({ message: e.message }); }
-});
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
 
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return res.status(400).json({
+        message: 'Geçerli lat ve lng değerleri gerekli.'
+      });
+    }
+
+    const apiKey = process.env.GOOGLE_GEOCODING_API_KEY;
+
+    if (!apiKey) {
+      return res.status(500).json({
+        message: 'Google Geocoding API anahtarı tanımlı değil.'
+      });
+    }
+
+    const url =
+      `https://maps.googleapis.com/maps/api/geocode/json` +
+      `?latlng=${lat},${lng}` +
+      `&language=tr` +
+      `&region=tr` +
+      `&key=${apiKey}`;
+
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      throw new Error(`Google Geocoding HTTP hatası: ${response.status}`);
+    }
+
+    const data: any = await response.json();
+
+    if (data.status !== 'OK' || !data.results?.length) {
+      console.error('Google Geocoding hatası:', data.status, data.error_message);
+
+      return res.status(404).json({
+        message: 'Konum için adres bulunamadı.'
+      });
+    }
+
+    const displayName = data.results[0].formatted_address;
+
+    return res.json({
+      displayName,
+      lat,
+      lng
+    });
+  } catch (e: any) {
+    console.error('Reverse geocoding hatası:', e);
+
+    return res.status(502).json({
+      message: e.message
+    });
+  }
+  
 app.get('/route', async (req, res) => {
   try {
     const fromLat = Number(req.query.fromLat);
