@@ -266,15 +266,19 @@ app.get('/places/search', async (req, res) => {
     );
 
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error(
+    const errorText = await response.text();
+
+    console.error(
         'Google Places HTTP hatası:',
         response.status,
         errorText
-      );
+    );
 
-      throw new Error(`Google Places HTTP hatası: ${response.status}`);
-    }
+    return res.status(502).json({
+        status: response.status,
+        error: errorText
+    });
+}
 
     const data: any = await response.json();
 

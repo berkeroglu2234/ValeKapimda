@@ -255,7 +255,10 @@ app.get('/places/search', async (req, res) => {
         if (!response.ok) {
             const errorText = await response.text();
             console.error('Google Places HTTP hatası:', response.status, errorText);
-            throw new Error(`Google Places HTTP hatası: ${response.status}`);
+            return res.status(502).json({
+                status: response.status,
+                error: errorText
+            });
         }
         const data = await response.json();
         const results = (data.places || [])
