@@ -302,7 +302,7 @@ app.get('/places/reverse', async (req, res) => {
       message: e.message
     });
   }
-  
+ }); 
 app.get('/route', async (req, res) => {
   try {
     const fromLat = Number(req.query.fromLat);

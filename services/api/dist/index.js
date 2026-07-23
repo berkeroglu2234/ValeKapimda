@@ -287,21 +287,6 @@ app.get('/places/reverse', async (req, res) => {
         });
     }
 });
-try {
-    const lat = Number(req.query.lat), lng = Number(req.query.lng);
-    const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&accept-language=tr&lat=${lat}&lon=${lng}`, { headers: { 'User-Agent': 'ValeKapimda/1.0 (support@valekapimda.app)' } });
-    if (!response.ok) {
-        const text = await response.text();
-        console.log("Nominatim reverse hata:", response.status, text);
-        throw new Error(`Adres servisi hata verdi: ${response.status}`);
-    }
-    const data = await response.json();
-    res.json({ displayName: data.display_name || `${lat}, ${lng}` });
-}
-catch (e) {
-    res.status(502).json({ message: e.message });
-}
-;
 app.get('/route', async (req, res) => {
     try {
         const fromLat = Number(req.query.fromLat);

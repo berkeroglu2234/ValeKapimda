@@ -1,1 +1,4 @@
-<resources><string name="app_name">ValeKapımda</string></resources>
+<resources>
+    <string name="app_name">ValeKapımda</string>
+    <string name="google_maps_key">AIzaSyC7KiHQlxIua6g4spodYpmdkhn-YKFpkxU</string>
+</resources>

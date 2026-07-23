@@ -1,5 +1,7 @@
 package com.valekapimda.customer
 
+import com.google.android.libraries.places.api.net.PlacesClient
+import com.google.android.libraries.places.api.Places
 import androidx.compose.runtime.saveable.rememberSaveable
 import android.Manifest
 import android.annotation.SuppressLint
@@ -147,12 +149,24 @@ private data class DriverInfo(val name: String, val phone: String, val rating: D
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { ValeKapimdaApp() }
+        if (!Places.isInitialized()) {
+            Places.initializeWithNewPlacesApiEnabled(
+                applicationContext,
+                getString(R.string.google_maps_key)
+            )
+        }
+
+        val placesClient: PlacesClient = Places.createClient(this)
+        setContent {
+            ValeKapimdaApp(placesClient)
+        }
     }
 }
 
 @Composable
-private fun ValeKapimdaApp() {
+private fun ValeKapimdaApp(
+    placesClient: PlacesClient
+) {
     var screen by remember { mutableStateOf(Screen.Splash) }
     var phone by remember { mutableStateOf("") }
     val vehicles = remember {
