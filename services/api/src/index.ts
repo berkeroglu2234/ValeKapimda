@@ -216,35 +216,93 @@ app.patch('/requests/:id/cancel', auth, role('CUSTOMER'), async (req: AuthedRequ
 app.get('/places/search', async (req, res) => {
   try {
     const q = String(req.query.q || '').trim();
-    if (q.length < 3) return res.json([]);
-    const viewbox = req.query.lat && req.query.lng
-      ? `&viewbox=${Number(req.query.lng)-0.6},${Number(req.query.lat)+0.4},${Number(req.query.lng)+0.6},${Number(req.query.lat)-0.4}&bounded=0`
-      : '';
-    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=7&countrycodes=tr&accept-language=tr&q=${encodeURIComponent(q)}${viewbox}`;
-    const response = await fetch(url, {
-  headers: {
-    "User-Agent": "ValeKapimda-App"
+
+    if (q.length < 3) {
+      return res.json([]);
+    }
+
+    const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+
+    if (!apiKey) {
+      return res.status(500).json({
+        message: 'Google Places API anahtarı tanımlı değil.'
+      });
+    }
+
+    const requestBody: any = {
+      textQuery: q,
+      languageCode: 'tr',
+      regionCode: 'TR',
+      maxResultCount: 7
+    };
+
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      requestBody.locationBias = {
+        circle: {
+          center: {
+            latitude: lat,
+            longitude: lng
+          },
+          radius: 50000
+        }
+      };
+    }
+
+    const response = await fetch(
+      'https://places.googleapis.com/v1/places:searchText',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': apiKey,
+          'X-Goog-FieldMask':
+            'places.displayName,places.formattedAddress,places.location'
+        },
+        body: JSON.stringify(requestBody)
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(
+        'Google Places HTTP hatası:',
+        response.status,
+        errorText
+      );
+
+      throw new Error(`Google Places HTTP hatası: ${response.status}`);
+    }
+
+    const data: any = await response.json();
+
+    const results = (data.places || [])
+      .filter((place: any) =>
+        place.location &&
+        Number.isFinite(place.location.latitude) &&
+        Number.isFinite(place.location.longitude)
+      )
+      .map((place: any) => ({
+        displayName:
+          place.formattedAddress ||
+          place.displayName?.text ||
+          'Adres',
+        lat: place.location.latitude,
+        lng: place.location.longitude
+      }));
+
+    return res.json(results);
+  } catch (e: any) {
+    console.error('Google Places arama hatası:', e);
+
+    return res.status(502).json({
+      message: e.message
+    });
   }
 });
 
-const text = await response.text();
-
-if (!response.ok) {
-  console.log("Nominatim hata:", response.status, text);
-  throw new Error(`Adres servisi hata verdi: ${response.status}`);
-}
-
-const data:any[] = JSON.parse(text);
-
-res.json(
-  data.map(x => ({
-    displayName: x.display_name,
-    lat: Number(x.lat),
-    lng: Number(x.lon)
-  }))
-);
-  } catch (e: any) { res.status(502).json({ message: e.message }); }
-});
 
 app.get('/places/reverse', async (req, res) => {
   try {
