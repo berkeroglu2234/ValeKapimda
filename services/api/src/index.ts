@@ -155,15 +155,17 @@ app.post('/requests', auth, role('CUSTOMER'), async (req: AuthedRequest, res) =>
       [req.user!.id]
     );
 
-    if (customer.rows[0]?.phone) {
-      await sendNetgsmSms(
-        customer.rows[0].phone,
-        "Vale talebiniz alinmistir. En kisa surede size vale yonlendirilecektir."
-      );
-    }
-
     io.emit('request:new', r.rows[0]);
-    res.status(201).json(r.rows[0]);
+res.status(201).json(r.rows[0]);
+
+if (customer.rows[0]?.phone) {
+  sendNetgsmSms(
+    customer.rows[0].phone,
+    "Vale talebiniz alinmistir. En kisa surede size vale yonlendirilecektir."
+  ).catch((error) => {
+    console.error("Talep SMS'i gönderilemedi:", error);
+  });
+}
   } catch (e: any) { res.status(500).json({ message: e.message }); }
 });
 
@@ -254,21 +256,32 @@ app.get('/places/reverse', async (req, res) => {
 
 app.get('/route', async (req, res) => {
   try {
-    const fromLat = Number(req.query.fromLat), fromLng = Number(req.query.fromLng);
-    const toLat = Number(req.query.toLat), toLng = Number(req.query.toLng);
-    if (![fromLat,fromLng,toLat,toLng].every(Number.isFinite)) return res.status(400).json({ message: 'Koordinatlar geçersiz' });
-    const response = await fetch(
-  `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&accept-language=tr`,
-  {
-    headers: {
-      "User-Agent": "ValeKapimda-App/1.0"
+    const fromLat = Number(req.query.fromLat);
+    const fromLng = Number(req.query.fromLng);
+    const toLat = Number(req.query.toLat);
+    const toLng = Number(req.query.toLng);
+
+    if (![fromLat, fromLng, toLat, toLng].every(Number.isFinite)) {
+      return res.status(400).json({ message: 'Koordinatlar geçersiz' });
     }
-  }
-);
+
+    const response = await fetch(
+      `https://router.project-osrm.org/route/v1/driving/${fromLng},${fromLat};${toLng},${toLat}?overview=full&geometries=geojson&steps=true`,
+      {
+        headers: {
+          "User-Agent": "ValeKapimda-App/1.0"
+        }
+      }
+    );
+
     if (!response.ok) throw new Error('Rota servisi yanıt vermedi');
+
     const data: any = await response.json();
     const route = data.routes?.[0];
-    if (!route) return res.status(404).json({ message: 'Rota bulunamadı' });
+
+    if (!route) {
+      return res.status(404).json({ message: 'Rota bulunamadı' });
+    }
     res.json({
       distanceKm: Math.round((route.distance / 1000) * 10) / 10,
       durationMinutes: Math.max(1, Math.round(route.duration / 60)),

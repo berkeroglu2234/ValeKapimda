@@ -158,11 +158,13 @@ app.post('/requests', auth, role('CUSTOMER'), async (req, res) => {
         const r = await pool.query(`INSERT INTO valet_requests(customer_id,vehicle_id,pickup_address,pickup_lat,pickup_lng,destination_address,destination_lat,destination_lng,distance_km,quoted_price)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`, [req.user.id, v.vehicleId, v.pickupAddress, v.pickupLat, v.pickupLng, v.destinationAddress, v.destinationLat, v.destinationLng, v.distanceKm, v.quotedPrice]);
         const customer = await pool.query(`SELECT phone FROM users WHERE id=$1`, [req.user.id]);
-        if (customer.rows[0]?.phone) {
-            await sendNetgsmSms(customer.rows[0].phone, "Vale talebiniz alinmistir. En kisa surede size vale yonlendirilecektir.");
-        }
         io.emit('request:new', r.rows[0]);
         res.status(201).json(r.rows[0]);
+        if (customer.rows[0]?.phone) {
+            sendNetgsmSms(customer.rows[0].phone, "Vale talebiniz alinmistir. En kisa surede size vale yonlendirilecektir.").catch((error) => {
+                console.error("Talep SMS'i gönderilemedi:", error);
+            });
+        }
     }
     catch (e) {
         res.status(500).json({ message: e.message });
@@ -239,8 +241,11 @@ app.get('/places/reverse', async (req, res) => {
     try {
         const lat = Number(req.query.lat), lng = Number(req.query.lng);
         const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&accept-language=tr&lat=${lat}&lon=${lng}`, { headers: { 'User-Agent': 'ValeKapimda/1.0 (support@valekapimda.app)' } });
-        if (!response.ok)
-            throw new Error('Adres servisi yanıt vermedi');
+        if (!response.ok) {
+            const text = await response.text();
+            console.log("Nominatim reverse hata:", response.status, text);
+            throw new Error(`Adres servisi hata verdi: ${response.status}`);
+        }
         const data = await response.json();
         res.json({ displayName: data.display_name || `${lat}, ${lng}` });
     }
@@ -250,17 +255,25 @@ app.get('/places/reverse', async (req, res) => {
 });
 app.get('/route', async (req, res) => {
     try {
-        const fromLat = Number(req.query.fromLat), fromLng = Number(req.query.fromLng);
-        const toLat = Number(req.query.toLat), toLng = Number(req.query.toLng);
-        if (![fromLat, fromLng, toLat, toLng].every(Number.isFinite))
+        const fromLat = Number(req.query.fromLat);
+        const fromLng = Number(req.query.fromLng);
+        const toLat = Number(req.query.toLat);
+        const toLng = Number(req.query.toLng);
+        if (![fromLat, fromLng, toLat, toLng].every(Number.isFinite)) {
             return res.status(400).json({ message: 'Koordinatlar geçersiz' });
-        const response = await fetch(`https://router.project-osrm.org/route/v1/driving/${fromLng},${fromLat};${toLng},${toLat}?overview=full&geometries=geojson`);
+        }
+        const response = await fetch(`https://router.project-osrm.org/route/v1/driving/${fromLng},${fromLat};${toLng},${toLat}?overview=full&geometries=geojson&steps=true`, {
+            headers: {
+                "User-Agent": "ValeKapimda-App/1.0"
+            }
+        });
         if (!response.ok)
             throw new Error('Rota servisi yanıt vermedi');
         const data = await response.json();
         const route = data.routes?.[0];
-        if (!route)
+        if (!route) {
             return res.status(404).json({ message: 'Rota bulunamadı' });
+        }
         res.json({
             distanceKm: Math.round((route.distance / 1000) * 10) / 10,
             durationMinutes: Math.max(1, Math.round(route.duration / 60)),

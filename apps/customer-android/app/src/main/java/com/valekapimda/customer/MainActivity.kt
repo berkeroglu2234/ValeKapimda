@@ -1224,7 +1224,7 @@ private suspend fun createRealValetRequest(
                 put("fullName", "ValeKapımda Müşterisi")
             }
         )
-
+			Log.d("VALE_DEBUG", "LOGIN OK: $login")
         val token = login.optString("token")
         if (token.isBlank()) {
             throw IllegalStateException("Giriş cevabında token bulunamadı: $login")
@@ -1244,7 +1244,7 @@ private suspend fun createRealValetRequest(
             },
             token
         )
-
+        Log.d("VALE_DEBUG", "VEHICLE OK: $vehicleJson")
         val backendVehicleId = vehicleJson.optString("id")
         if (backendVehicleId.isBlank()) {
             throw IllegalStateException("Araç cevabında id bulunamadı: $vehicleJson")
@@ -1267,7 +1267,7 @@ private suspend fun createRealValetRequest(
             },
             token
         )
-
+        Log.d("VALE_DEBUG", "REQUEST OK: $request")
         val requestId = request.optString("id")
         if (requestId.isBlank()) {
             throw IllegalStateException("Talep cevabında id bulunamadı: $request")
